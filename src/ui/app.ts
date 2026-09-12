@@ -132,7 +132,6 @@ class TranscriptMessages implements Component {
     private options: TranscriptOptions,
     private getPad: () => number,
     private cwd: string,
-    private borderColor: (text: string) => string,
     private ui: TUI,
   ) {}
 
@@ -167,6 +166,10 @@ class TranscriptMessages implements Component {
       if (!this.status) return;
       const rendered = this.status.render(width);
       if (rendered.length === 0) return;
+      // Exactly one blank row separates the status from whatever precedes it.
+      // The run/prompt may already end with its own separator, so only add one
+      // when the previous row is not already blank.
+      if (lines.length === 0 || lines[lines.length - 1] !== "") lines.push("");
       const start = lines.length;
       lines.push(...rendered);
       ranges.push({ component: this.status, start, end: lines.length });
@@ -177,7 +180,7 @@ class TranscriptMessages implements Component {
       seen.add(run.id);
       let view = this.runViews.get(run.id);
       if (!view) {
-        view = new RunView(run, this.getPad, this.cwd, this.options, this.borderColor, this.ui);
+        view = new RunView(run, this.getPad, this.cwd, this.options, this.ui);
         this.runViews.set(run.id, view);
       } else {
         view.setRun(run);
@@ -255,9 +258,10 @@ class WorkingIndicator implements Component {
       label = t.fg("mdHeading", status.label);
     }
     const pad = " ".repeat(this.getPad());
-    // One blank row above keeps the row from butting against the transcript; no
-    // trailing blank, so it doesn't add a gap before the input box.
-    const lines = ["", pad + markContent(`${glyph} ${label}`)];
+    // The transcript composer owns the single blank row above the status; adding
+    // one here too would double the gap. No trailing blank, either, so the row
+    // doesn't add space before the input box.
+    const lines = [pad + markContent(`${glyph} ${label}`)];
     // Clicking reveals only the current action's detail (e.g. streaming thinking).
     if (status.detail && this.expandedFor() === status.id) {
       const detailPad = " ".repeat(this.getPad() + 2);
@@ -637,7 +641,6 @@ export class MidasApp {
       this.transcriptOptions,
       () => rowPad(options.cwd),
       options.cwd,
-      borderColor,
       this.tui,
     );
     // pi seeds the context slot from the branch on startup; mirror that with
@@ -680,7 +683,12 @@ export class MidasApp {
     // Give the queue/steer block a blank row on the side the dock separator
     // does not already cover, so its spacing above and below matches.
     const viewportMode = isViewportTUI(this.tui);
-    const pendingBlock = new PaddedBlock(pendingMessages, viewportMode ? "bottom" : "top");
+    // Fullscreen dock: its own separator sits ABOVE the queue, so the queue needs
+    // no extra row before the input box. Regular mode still gets a bottom blank
+    // via the always-present BlankLine added below.
+    const pendingBlock = viewportMode
+      ? pendingMessages
+      : new PaddedBlock(pendingMessages, "top");
 
     if (viewportMode) {
       const viewport = createChatViewport({

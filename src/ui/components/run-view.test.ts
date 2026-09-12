@@ -51,7 +51,6 @@ test("a settled run keeps `!` shell output visible while collapsing its tools", 
     () => 1,
     "/cwd",
     { hideThinking: true, expandedTools: false },
-    (text: string) => text,
     tui,
   );
   view.setActive(false); // idle/settled: the turn collapses to "+ Worked"
@@ -79,14 +78,13 @@ test("a bash box keeps a single blank row after the prose above it", () => {
     () => 1,
     "/cwd",
     { hideThinking: true, expandedTools: false },
-    (text: string) => text,
     tui,
   );
   view.setActive(false);
   const clean = (line: string): string => stripAnsi(line.replace(/\x1b\][^\x07]*\x07/g, ""));
   const lines = view.render(80).map(clean);
   const textIndex = lines.findIndex((line) => line.includes("done"));
-  const borderIndex = lines.findIndex((line, index) => index > textIndex && line.includes("╭"));
+  const borderIndex = lines.findIndex((line, index) => index > textIndex && /^─+$/.test(line.trim()));
   assert.ok(textIndex >= 0 && borderIndex > textIndex);
   const blanks = lines.slice(textIndex + 1, borderIndex).filter((line) => line.trim() === "").length;
   assert.equal(blanks, 1);
@@ -106,11 +104,53 @@ test("a pending steer renders as its own user card, not a Worked block", () => {
     () => 1,
     "/cwd",
     { hideThinking: true, expandedTools: false },
-    (text: string) => text,
     tui,
   );
   view.setActive(false);
   const plain = view.render(60).map(stripAnsi).join("\n");
   assert.match(plain, /steer message/);
   assert.doesNotMatch(plain, /Worked/);
+});
+
+test("a settled run reuses its rendered lines until a message version changes", () => {
+  const runs = computeRuns([
+    message("u1", "user", [{ kind: "text", id: "u1t", text: "go" }]),
+    message("a1", "assistant", [{ kind: "text", id: "a1t", text: "done" }]),
+  ]);
+  const view = new RunView(
+    runs[0]!,
+    () => 1,
+    "/cwd",
+    { hideThinking: true, expandedTools: false },
+    tui,
+  );
+  view.setActive(false);
+
+  const first = view.render(80);
+  assert.equal(view.render(80), first, "unchanged run returns the cached lines");
+
+  // A bump from the transcript (any part mutation) invalidates the cache.
+  runs[0]!.messages[1]!.version = 1;
+  const second = view.render(80);
+  assert.notEqual(second, first);
+
+  // Explicit invalidation (theme/settings change) also drops the cache.
+  view.invalidate();
+  assert.notEqual(view.render(80), second);
+});
+
+test("an active run is never cached", () => {
+  const runs = computeRuns([
+    message("u1", "user", [{ kind: "text", id: "u1t", text: "go" }]),
+    message("a1", "assistant", [{ kind: "text", id: "a1t", text: "done" }]),
+  ]);
+  const view = new RunView(
+    runs[0]!,
+    () => 1,
+    "/cwd",
+    { hideThinking: true, expandedTools: false },
+    tui,
+  );
+  view.setActive(true);
+  assert.notEqual(view.render(80), view.render(80));
 });

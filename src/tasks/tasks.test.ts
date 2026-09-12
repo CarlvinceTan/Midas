@@ -51,7 +51,7 @@ test("worktree lifecycle shares board and leaves dirty main checkout untouched",
   assert.equal(git(cwd, "rev-parse", "HEAD"), mainHead);
   assert.equal(readFileSync(join(cwd, "base.txt"), "utf8"), "user edits\n");
   assert.equal(git(cwd, "show", "midas/integration:result.txt"), "done");
-  cleanupTask(board, task.id);
+  await cleanupTask(board, task.id);
   assert.equal(board.get(task.id).attempts[0]!.cleaned, true);
   assert.equal(board.read().tasks.length, 1);
 });
@@ -62,11 +62,14 @@ test("claims prevent duplicate workers; dependencies wait for merge", async (t) 
   const dependent = board.add({ ...contract, dependencies: [first.id] });
   await assert.rejects(runTask(board, dependent.id, async () => {}), /Waiting on/);
   let finish!: () => void;
+  let started!: () => void;
+  const began = new Promise<void>((resolve) => { started = resolve; });
   const running = runTask(board, first.id, async (_, attempt) => {
     writeFileSync(join(attempt.worktree, "result.txt"), "done");
-    await new Promise<void>((resolve) => { finish = resolve; });
+    await new Promise<void>((resolve) => { finish = resolve; started(); });
   });
   await assert.rejects(runTask(board, first.id, async () => {}), /locked/);
+  await began;
   finish();
   await running;
   await assert.rejects(runTask(board, dependent.id, async () => {}), /Waiting on/);
@@ -105,7 +108,7 @@ test("merge conflict preserves result and never advances target", async (t) => {
   assert.equal(board.get(b.id).status, "completed");
   assert.equal(board.get(b.id).merge, "failed");
   assert.equal(git(cwd, "rev-parse", "midas/integration"), before);
-  assert.throws(() => cleanupTask(board, b.id), /Only merged/);
+  await assert.rejects(cleanupTask(board, b.id), /Only merged/);
 });
 
 test("checked-out integration target and dirty cleanup are refused", async (t) => {
@@ -117,7 +120,7 @@ test("checked-out integration target and dirty cleanup are refused", async (t) =
   git(cwd, "checkout", "main");
   await mergeTask(board, task.id);
   writeFileSync(join(board.get(task.id).attempts[0]!.worktree, "local.txt"), "keep");
-  assert.throws(() => cleanupTask(board, task.id), /local or ignored/);
+  await assert.rejects(cleanupTask(board, task.id), /local or ignored/);
 });
 
 test("board rejects invalid contracts, unknown dependencies, corrupt data and concurrent writers", (t) => {

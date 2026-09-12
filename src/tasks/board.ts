@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -33,8 +33,23 @@ export interface Task extends Contract {
 }
 export interface Board { version: 1; tasks: Task[] }
 
+/**
+ * Blocking git. Reserved for one-time setup (resolving the board directory) and
+ * tests; runtime worktree/merge/validation operations must use `gitAsync` so a
+ * slow `git` subprocess can never stall the TUI event loop.
+ */
 export function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+/** Non-blocking git; see `git`. */
+export function gitAsync(cwd: string, ...args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(stdout.trim());
+    });
+  });
 }
 
 /** Local-filesystem board shared by linked worktrees. Corrupt data is never reset. */
@@ -89,6 +104,30 @@ export class TaskBoard {
     return () => { clearInterval(timer); rmSync(path, { recursive: true, force: true }); };
   }
 
+  /**
+   * Serializes worktree provisioning and integration inside this process, then
+   * takes the cross-process integration file lock. The file lock stays
+   * fail-closed (the dispatcher lease elects one leader); the in-process queue
+   * lets concurrent task runs wait for each other instead of failing.
+   */
+  private integrationQueue: Promise<void> = Promise.resolve();
+  async withIntegration<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = this.integrationQueue;
+    let release!: () => void;
+    this.integrationQueue = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      const unlock = this.lock("integration");
+      try {
+        return await fn();
+      } finally {
+        unlock();
+      }
+    } finally {
+      release();
+    }
+  }
+
   mutate<T>(fn: (board: Board) => T): T {
     const unlock = this.lock("board");
     let temp: string | undefined;
@@ -130,25 +169,27 @@ export class TaskBoard {
       return task;
     });
   }
-  prepare(id: string): Attempt {
+  async prepare(id: string): Promise<Attempt> {
     const task = this.get(id);
     if (task.status !== "new" && task.status !== "blocked") throw new Error(`Task is ${task.status}; cannot run`);
     for (const dep of task.dependencies ?? []) {
       const prerequisite = this.get(dep);
       if (prerequisite.merge !== "merged" || prerequisite.target !== task.target) throw new Error(`Waiting on ${dep} to merge`);
     }
-    const unlock = this.lock("integration");
-    try {
+    return this.withIntegration(async () => {
       let base: string;
-      try { base = git(this.cwd, "rev-parse", "--verify", `refs/heads/${task.target}`); }
-      catch { git(this.cwd, "branch", task.target, "HEAD"); base = git(this.cwd, "rev-parse", `refs/heads/${task.target}`); }
-      for (const dep of task.dependencies ?? []) git(this.cwd, "merge-base", "--is-ancestor", this.get(dep).mergedCommit!, base);
+      try { base = await gitAsync(this.cwd, "rev-parse", "--verify", `refs/heads/${task.target}`); }
+      catch {
+        await gitAsync(this.cwd, "branch", task.target, "HEAD");
+        base = await gitAsync(this.cwd, "rev-parse", `refs/heads/${task.target}`);
+      }
+      for (const dep of task.dependencies ?? []) await gitAsync(this.cwd, "merge-base", "--is-ancestor", this.get(dep).mergedCommit!, base);
       const attemptId = `${id}-${randomUUID().slice(0, 8)}`;
       const attempt: Attempt = { id: attemptId, base, branch: `midas/task-${attemptId}`, worktree: resolve(this.directory, "worktrees", attemptId) };
       this.update(id, (t) => { t.status = "running"; t.detail = "Provisioning worktree"; t.attempts.push(attempt); });
       mkdirSync(join(this.directory, "worktrees"), { recursive: true });
-      git(this.cwd, "worktree", "add", "-b", attempt.branch, attempt.worktree, base);
+      await gitAsync(this.cwd, "worktree", "add", "-b", attempt.branch, attempt.worktree, base);
       return attempt;
-    } finally { unlock(); }
+    });
   }
 }

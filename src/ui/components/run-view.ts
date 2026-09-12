@@ -36,19 +36,26 @@ export class RunView implements Component {
   private ranges: Range[] = [];
   private headerStart: number | undefined;
   private headerEnd: number | undefined;
+  /**
+   * Rendered output for this run, reused across frames. The transcript bumps a
+   * message's `version` on every mutation, so the summed version is a cheap,
+   * exact change signal; only the run being streamed (active) is re-rendered
+   * every frame because its elapsed-time rows change with the clock.
+   */
+  private cache?: { key: string; lines: string[] };
 
   constructor(
     run: Run,
     private getPad: () => number,
     private cwd: string,
     private options: RunViewOptions,
-    private borderColor: (text: string) => string,
     private ui: TUI,
   ) {
     this.run = run;
   }
 
   invalidate(): void {
+    this.cache = undefined;
     for (const child of this.textBlocks.values()) child.invalidate();
     for (const child of this.activityRows.values()) child.invalidate();
     for (const child of this.bashBoxes.values()) child.invalidate();
@@ -62,7 +69,34 @@ export class RunView implements Component {
     this.active = active;
   }
 
+  /** Stable key covering every input that changes this run's rendered lines. */
+  private renderKey(width: number): string {
+    let versions = 0;
+    for (const message of this.run.messages) versions += message.version ?? 0;
+    return [
+      this.run.id,
+      width,
+      this.getPad(),
+      this.run.messages.length,
+      versions,
+      this.active ? 1 : 0,
+      this.expanded ? 1 : 0,
+      this.options.expandedTools ? 1 : 0,
+      this.options.hideThinking ? 1 : 0,
+    ].join("|");
+  }
+
   render(width: number): string[] {
+    // A live run animates (spinner, "Thinking for Xs"), so its key never settles.
+    if (this.active) this.cache = undefined;
+    const key = this.renderKey(width);
+    if (!this.active && this.cache?.key === key) return this.cache.lines;
+    const lines = this.renderUncached(width);
+    if (!this.active) this.cache = { key, lines };
+    return lines;
+  }
+
+  private renderUncached(width: number): string[] {
     const pad = this.getPad();
     const lines: string[] = [];
     const ranges: Range[] = [];
@@ -78,7 +112,7 @@ export class RunView implements Component {
         .join("\n")
         .trim();
       if (text) {
-        const component = new UserMessageComponent(text, getMarkdownTheme(), pad, [], this.borderColor);
+        const component = new UserMessageComponent(text, getMarkdownTheme(), pad);
         lines.push(...component.render(width));
         promptRendered = true;
       }

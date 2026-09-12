@@ -137,7 +137,15 @@ export class RoundedDialogFrame extends Container {
 
     const lines: string[] = [];
     for (let i = 0; i < inner.length; i++) {
-      if (i < top || i > bottom) {
+      if (i > bottom) {
+        // Rows below the box are the editor's autocomplete menu. They carry
+        // their own padding plus the `→ `/`  ` pointer prefix, so inset them by
+        // the frame's gutter to line each command up under the first character
+        // typed after the slash.
+        lines.push(fit(" ".repeat(pad) + inner[i]!));
+        continue;
+      }
+      if (i < top) {
         lines.push(fit(inner[i]!));
         continue;
       }

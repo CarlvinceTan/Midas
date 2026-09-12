@@ -80,3 +80,27 @@ test("restoreBash appends when it is newer than every message", () => {
   transcript.restoreBash({ command: "pwd", output: "/x\n", exclude: false, status: "complete", exitCode: 0, at: 500 });
   assert.equal(transcript.messages[1]!.created, 500);
 });
+
+test("message versions bump on every mutation, for cheap render caching", () => {
+  const transcript = new Transcript();
+  transcript.upsertMessage(assistant("a1"));
+  const afterCreate = transcript.messages[0]!.version!;
+  assert.ok(afterCreate >= 1, "creation assigns a version");
+
+  transcript.upsertPart(textPart("p1", "a1", "Hello"));
+  const afterPart = transcript.messages[0]!.version!;
+  assert.ok(afterPart > afterCreate, "adding a part bumps the message");
+
+  transcript.appendPartDelta("p1", "text", " world");
+  const afterDelta = transcript.messages[0]!.version!;
+  assert.ok(afterDelta > afterPart, "a streamed delta bumps the message");
+
+  transcript.removePart("a1", "p1");
+  assert.ok(transcript.messages[0]!.version! > afterDelta, "removing a part bumps the message");
+
+  // A different message's mutations don't touch this one.
+  transcript.upsertMessage(assistant("a2"));
+  const a1 = transcript.messages.find((m) => m.id === "a1")!.version;
+  transcript.upsertPart(textPart("p2", "a2", "other"));
+  assert.equal(transcript.messages.find((m) => m.id === "a1")!.version, a1);
+});

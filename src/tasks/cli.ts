@@ -51,5 +51,5 @@ export async function taskCli(args: string[]): Promise<void> {
   if (command === "list") process.stdout.write(JSON.stringify(board.read(), null, 2) + "\n");
   if (command === "run") await runTask(board, value!);
   if (command === "merge") await mergeTask(board, value!);
-  if (command === "cleanup") cleanupTask(board, value!);
+  if (command === "cleanup") await cleanupTask(board, value!);
 }

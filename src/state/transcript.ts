@@ -63,6 +63,12 @@ export interface MessageView {
   hidden?: boolean;
   /** A mid-turn steer from the user: part of the current run, not a new one. */
   steer?: boolean;
+  /**
+   * Monotonic counter bumped on every mutation of this message or any of its
+   * parts. Views sum it to detect changes without diffing all content, which
+   * lets them cache rendered lines across frames.
+   */
+  version?: number;
   parts: PartView[];
 }
 
@@ -131,6 +137,10 @@ export class Transcript {
   questions: QuestionView[] = [];
   private messageIndex = new Map<string, MessageView>();
   private partIndex = new Map<string, PartView>();
+  /** Part id -> owning message id, so a part mutation can bump its message. */
+  private owner = new Map<string, string>();
+  /** Source of `MessageView.version`; only ever increases. */
+  private revision = 0;
   private listeners = new Set<() => void>();
 
   subscribe(listener: () => void): () => void {
@@ -140,6 +150,15 @@ export class Transcript {
 
   private emit(): void {
     for (const listener of this.listeners) listener();
+  }
+
+  private touch(message: MessageView | undefined): void {
+    if (message) message.version = ++this.revision;
+  }
+
+  private messageForPart(partId: string): MessageView | undefined {
+    const messageID = this.owner.get(partId);
+    return messageID ? this.messageIndex.get(messageID) : undefined;
   }
 
   private findMessage(id: string): MessageView | undefined {
@@ -157,6 +176,7 @@ export class Transcript {
       next.parts = view.parts;
       Object.assign(view, next);
     }
+    this.touch(view);
     this.emit();
   }
 
@@ -165,18 +185,23 @@ export class Transcript {
     if (!view) return;
     this.messageIndex.delete(id);
     this.messages = this.messages.filter((m) => m.id !== id);
-    for (const part of view.parts) this.partIndex.delete(part.id);
+    for (const part of view.parts) {
+      this.partIndex.delete(part.id);
+      this.owner.delete(part.id);
+    }
     this.emit();
   }
 
   upsertPart(part: Part, delta?: string): void {
     const message = this.findMessage(part.messageID);
     if (!message) return;
+    this.owner.set(part.id, part.messageID);
     const existing = this.partIndex.get(part.id);
     // opencode streams prose as deltas; apply them so text grows incrementally
     // instead of jumping between sparse full-part snapshots.
     if (existing && delta && (existing.kind === "text" || existing.kind === "reasoning")) {
       existing.text += delta;
+      this.touch(message);
       this.emit();
       return;
     }
@@ -185,6 +210,7 @@ export class Transcript {
       message.parts.push(view);
       this.partIndex.set(view.id, view);
     }
+    this.touch(message);
     this.emit();
   }
 
@@ -194,6 +220,7 @@ export class Transcript {
     if (part?.kind === "text" && field === "text") part.text += delta;
     else if (part?.kind === "reasoning" && field === "reasoning") part.text += delta;
     else return;
+    this.touch(this.messageForPart(id));
     this.emit();
   }
 
@@ -202,6 +229,8 @@ export class Transcript {
     if (!message) return;
     message.parts = message.parts.filter((p) => p.id !== partID);
     this.partIndex.delete(partID);
+    this.owner.delete(partID);
+    this.touch(message);
     this.emit();
   }
 
@@ -272,7 +301,9 @@ export class Transcript {
     };
     this.messageIndex.set(view.id, view);
     this.partIndex.set(part.id, part);
+    this.owner.set(part.id, view.id);
     this.messages.push(view);
+    this.touch(view);
     this.emit();
     return id;
   }
@@ -319,6 +350,8 @@ export class Transcript {
     this.messages.splice(index, 0, view);
     this.messageIndex.set(view.id, view);
     this.partIndex.set(part.id, part);
+    this.owner.set(part.id, view.id);
+    this.touch(view);
     this.emit();
   }
 
@@ -326,6 +359,7 @@ export class Transcript {
     const part = this.partIndex.get(id);
     if (part?.kind !== "bash") return;
     part.output += chunk;
+    this.touch(this.messageForPart(id));
     this.emit();
   }
 
@@ -334,6 +368,7 @@ export class Transcript {
     if (part?.kind !== "bash") return;
     part.status = cancelled ? "cancelled" : exitCode === 0 || exitCode === undefined ? "complete" : "error";
     part.exitCode = exitCode;
+    this.touch(this.messageForPart(id));
     this.emit();
   }
 
@@ -351,6 +386,7 @@ export class Transcript {
     };
     this.messageIndex.set(view.id, view);
     this.messages.push(view);
+    this.touch(view);
     this.emit();
   }
 
@@ -358,6 +394,7 @@ export class Transcript {
     this.messages = [];
     this.messageIndex.clear();
     this.partIndex.clear();
+    this.owner.clear();
     this.permissions = [];
     this.questions = [];
     this.phase = "idle";

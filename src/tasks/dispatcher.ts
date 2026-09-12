@@ -27,7 +27,7 @@ export class TaskDispatcher {
   private active = new Map<string, Promise<void>>();
   private timer?: ReturnType<typeof setInterval>;
   private release?: () => void;
-  private ticking = false;
+  private ticking?: Promise<void>;
   private stopped = false;
 
   constructor(
@@ -58,19 +58,24 @@ export class TaskDispatcher {
 
   /** Await in-flight runs (used by tests and `--once`). */
   async drain(): Promise<void> {
+    // A tick may still be integrating; wait for it before sampling the board.
+    await this.ticking;
     await Promise.allSettled([...this.active.values()]);
   }
 
   async tick(): Promise<void> {
-    if (this.stopped || this.ticking) return;
-    this.ticking = true;
-    try {
-      this.reconcile();
-      await this.integrate();
-      this.dispatchReady();
-    } finally {
-      this.ticking = false;
-    }
+    if (this.stopped) return;
+    if (this.ticking) return this.ticking;
+    this.ticking = (async () => {
+      try {
+        this.reconcile();
+        await this.integrate();
+        this.dispatchReady();
+      } finally {
+        this.ticking = undefined;
+      }
+    })();
+    return this.ticking;
   }
 
   /** A `running` task with no live lock was left behind by a crashed process. */
@@ -94,7 +99,7 @@ export class TaskDispatcher {
         if (this.options.cleanup !== false) {
           const after = this.board.get(task.id);
           if (after.merge === "merged" && !after.attempts.at(-1)?.cleaned) {
-            cleanupTask(this.board, task.id);
+            await cleanupTask(this.board, task.id);
             this.options.onEvent?.(`${task.id}: worktree cleaned`);
           }
         }
