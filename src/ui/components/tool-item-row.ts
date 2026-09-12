@@ -1,6 +1,6 @@
 import type { Component, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import type { ToolView } from "../../state/transcript.ts";
-import { markContent } from "../../lib/ansi.ts";
+import { markContent, truncateColored } from "../../lib/ansi.ts";
 import { renderTool } from "./tool-call.ts";
 
 /**
@@ -24,8 +24,15 @@ export class ToolItemRow implements Component {
     const pad = this.getPad();
     const padStr = " ".repeat(pad);
     const expanded = this.expanded || this.expandAll();
-    const rendered = renderTool(this.part, Math.max(1, width - pad), expanded, this.cwd);
-    return rendered.map((line, index) => (index === 0 ? padStr + markContent(line) : padStr + "  " + markContent(line)));
+    // Header sits at the row pad; preview lines indent two more columns.
+    const headWidth = Math.max(1, width - pad);
+    const bodyWidth = Math.max(1, width - pad - 2);
+    const rendered = renderTool(this.part, headWidth, expanded, this.cwd);
+    return rendered.map((line, index) =>
+      index === 0
+        ? padStr + markContent(truncateColored(line, headWidth))
+        : padStr + "  " + markContent(truncateColored(line, bodyWidth)),
+    );
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {

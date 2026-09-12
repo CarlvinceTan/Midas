@@ -3,6 +3,8 @@
  * composed (e.g. bold inside a colored frame) without resetting the outer style.
  */
 
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+
 const RESET = "\x1b[0m";
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -34,6 +36,24 @@ export const strikethrough = (t: string): string => `\x1b[9m${t}\x1b[29m`;
 /** Strip all SGR sequences so text can be measured/styled cleanly. */
 export function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+/**
+ * Truncate styled text to `maxWidth` visible columns, appending an ellipsis in
+ * the same colour as the text it replaces (pi-tui's truncation resets the colour
+ * before its ellipsis).
+ */
+export function truncateColored(text: string, maxWidth: number, ellipsis = "…"): string {
+  if (maxWidth <= 0) return "";
+  if (visibleWidth(text) <= maxWidth) return text;
+  const cut = truncateToWidth(text, maxWidth, ellipsis);
+  const index = cut.lastIndexOf(ellipsis);
+  if (index === -1) return cut;
+  const before = cut.slice(0, index);
+  const codes = [...before.matchAll(/\x1b\[[0-9;]*m/g)].map((match) => match[0]);
+  const color =
+    [...codes].reverse().find((code) => code !== "\x1b[0m" && code !== "\x1b[39m" && code !== "\x1b[22m" && code !== "\x1b[49m") ?? "";
+  return before + color + ellipsis + "\x1b[0m";
 }
 
 export { RESET };
