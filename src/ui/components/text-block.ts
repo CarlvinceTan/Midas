@@ -1,6 +1,7 @@
 import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import type { TextView } from "../../state/transcript.ts";
+import { normalizeHeadingDepth } from "../../lib/markdown.ts";
 import { getMarkdownTheme } from "../../theme/theme.ts";
 
 /**
@@ -49,7 +50,7 @@ export class TextBlock implements Component {
       getMarkdownTheme(),
       "Thinking...",
       this.pad,
-      [],
+      [normalizeHeadingDepth],
     );
     this.cache = component.render(width);
     this.cacheKey = key;

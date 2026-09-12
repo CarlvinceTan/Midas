@@ -331,7 +331,6 @@ export class Markdown {
         switch (token.type) {
             case "heading": {
                 const headingLevel = token.depth;
-                const headingPrefix = `${"#".repeat(headingLevel)} `;
                 // Build a heading-specific style context so inline tokens (codespan, bold, etc.)
                 // restore heading styling after their own ANSI resets instead of falling back to
                 // the default text style.
@@ -347,8 +346,9 @@ export class Markdown {
                     stylePrefix: this.getStylePrefix(headingStyleFn),
                 };
                 const headingText = this.renderInlineTokens(token.tokens || [], headingStyleContext);
-                const styledHeading = headingLevel >= 3 ? headingStyleFn(headingPrefix) + headingText : headingText;
-                lines.push(styledHeading);
+                // midas renders every heading as styled text; don't prepend literal
+                // `###` markers for deeper levels the way upstream pi-tui does.
+                lines.push(headingText);
                 if (nextTokenType && nextTokenType !== "space") {
                     lines.push(""); // Add spacing after headings (unless space token follows)
                 }
