@@ -51,6 +51,7 @@ test("a settled run keeps `!` shell output visible while collapsing its tools", 
     () => 1,
     "/cwd",
     { hideThinking: true, expandedTools: false },
+    (text) => text,
     tui,
   );
   view.setActive(false); // idle/settled: the turn collapses to "+ Worked"
@@ -78,6 +79,7 @@ test("a bash box keeps a single blank row after the prose above it", () => {
     () => 1,
     "/cwd",
     { hideThinking: true, expandedTools: false },
+    (text) => text,
     tui,
   );
   view.setActive(false);
@@ -104,6 +106,7 @@ test("a pending steer renders as its own user card, not a Worked block", () => {
     () => 1,
     "/cwd",
     { hideThinking: true, expandedTools: false },
+    (text) => text,
     tui,
   );
   view.setActive(false);
@@ -122,6 +125,7 @@ test("a settled run reuses its rendered lines until a message version changes", 
     () => 1,
     "/cwd",
     { hideThinking: true, expandedTools: false },
+    (text) => text,
     tui,
   );
   view.setActive(false);
@@ -149,6 +153,7 @@ test("an active run is never cached", () => {
     () => 1,
     "/cwd",
     { hideThinking: true, expandedTools: false },
+    (text) => text,
     tui,
   );
   view.setActive(true);

@@ -132,6 +132,7 @@ class TranscriptMessages implements Component {
     private options: TranscriptOptions,
     private getPad: () => number,
     private cwd: string,
+    private borderColor: (text: string) => string,
     private ui: TUI,
   ) {}
 
@@ -180,7 +181,7 @@ class TranscriptMessages implements Component {
       seen.add(run.id);
       let view = this.runViews.get(run.id);
       if (!view) {
-        view = new RunView(run, this.getPad, this.cwd, this.options, this.ui);
+        view = new RunView(run, this.getPad, this.cwd, this.options, this.borderColor, this.ui);
         this.runViews.set(run.id, view);
       } else {
         view.setRun(run);
@@ -641,6 +642,7 @@ export class MidasApp {
       this.transcriptOptions,
       () => rowPad(options.cwd),
       options.cwd,
+      borderColor,
       this.tui,
     );
     // pi seeds the context slot from the branch on startup; mirror that with

@@ -1,4 +1,4 @@
-import { UserMessageComponent } from "@earendil-works/pi-coding-agent";
+import { UserPromptCard } from "./user-prompt.ts";
 import type { Component, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import type { PartView } from "../../state/transcript.ts";
 import type { Run, RunSegment } from "../run-model.ts";
@@ -49,6 +49,7 @@ export class RunView implements Component {
     private getPad: () => number,
     private cwd: string,
     private options: RunViewOptions,
+    private borderColor: (text: string) => string,
     private ui: TUI,
   ) {
     this.run = run;
@@ -112,7 +113,7 @@ export class RunView implements Component {
         .join("\n")
         .trim();
       if (text) {
-        const component = new UserMessageComponent(text, getMarkdownTheme(), pad);
+        const component = new UserPromptCard(text, pad, this.borderColor);
         lines.push(...component.render(width));
         promptRendered = true;
       }
