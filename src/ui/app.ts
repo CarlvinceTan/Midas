@@ -54,7 +54,7 @@ import { BlankLine, PaddedBlock, createChatViewport } from "./layout.ts";
 import { getEditorTheme, getSettingsListTheme, initTheme, theme } from "../theme/theme.ts";
 import { GenerationRate, RateDisplay } from "../features/rate.ts";
 import { ContextDisplay, LiveContext, type ContextUsage } from "../features/live-context.ts";
-import { markContent } from "../lib/ansi.ts";
+import { markContent, truncateColored } from "../lib/ansi.ts";
 import { capitalize, parseShellCommand, truncateWords, usableSessionTitle, type ShellCommand } from "../lib/text.ts";
 import { CURRENCY_CHOICES, applyCurrencySetting, currencyLabel, normalizeCurrencyKey } from "../lib/currency.ts";
 import { SearchPicker } from "./components/search-picker.ts";
@@ -220,7 +220,7 @@ class TranscriptMessages implements Component {
   }
 }
 
-class WorkingIndicator implements Component {
+export class WorkingIndicator implements Component {
   private currentId = "";
 
   constructor(
@@ -258,20 +258,28 @@ class WorkingIndicator implements Component {
     } else {
       label = t.fg("mdHeading", status.label);
     }
-    const pad = " ".repeat(this.getPad());
+    const padN = this.getPad();
+    const pad = " ".repeat(padN);
+    // Mirror the left indent on the right so long commands are truncated with a
+    // color-matched ellipsis instead of running into the terminal edge.
+    const contentWidth = Math.max(1, width - padN * 2);
     // The transcript composer owns the single blank row above the status; adding
     // one here too would double the gap. No trailing blank, either, so the row
     // doesn't add space before the input box.
-    const lines = [pad + markContent(`${glyph} ${label}`)];
+    const lines = [pad + markContent(truncateColored(`${glyph} ${label}`, contentWidth))];
     // Clicking reveals only the current action's detail (e.g. streaming thinking).
     if (status.detail && this.expandedFor() === status.id) {
-      const detailPad = " ".repeat(this.getPad() + 2);
+      const detailIndent = padN + 2;
+      const detailPad = " ".repeat(detailIndent);
+      const detailWidth = Math.max(1, width - detailIndent - padN);
       const detailLines = status.detail
         .replace(/\r\n/g, "\n")
         .split("\n")
         .filter((line) => line.trim().length > 0)
         .slice(-12);
-      for (const line of detailLines) lines.push(detailPad + markContent(t.fg("thinkingText", line)));
+      for (const line of detailLines) {
+        lines.push(detailPad + markContent(truncateColored(t.fg("thinkingText", line), detailWidth)));
+      }
     }
     return lines;
   }
