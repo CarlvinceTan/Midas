@@ -680,8 +680,8 @@ export class MidasApp {
     const footerContainer = new Container();
     footerContainer.addChild(this.footer);
 
-    // Give the queue/steer block a blank row on the side the dock separator
-    // does not already cover, so its spacing above and below matches.
+    // Pad the queue/steer block on the side its surrounding dock separator does
+    // not already cover, so the queue sits one blank row off the transcript.
     const viewportMode = isViewportTUI(this.tui);
     // Fullscreen dock: its own separator sits ABOVE the queue, so the queue needs
     // no extra row before the input box. Regular mode still gets a bottom blank

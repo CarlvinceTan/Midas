@@ -31,7 +31,9 @@ export class QueuedMessages implements Component {
     const t = theme();
     const pad = Math.max(0, this.getPad());
     const prefix = " ".repeat(pad);
-    const available = Math.max(1, width - pad);
+    // Reserve the same gutter on the right as on the left (mirrors the footer),
+    // so a truncated row stops short of the terminal edge instead of running to it.
+    const available = Math.max(1, width - pad * 2);
     const ellipsis = "…";
     // `truncateToWidth` resets styling right before the ellipsis, so truncate
     // without one and append an explicitly dimmed ellipsis instead.

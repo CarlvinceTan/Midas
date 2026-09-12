@@ -294,6 +294,15 @@ test("queued messages respect the transcript padding", () => {
   assert.equal(lines[1], "    1. Padded");
 });
 
+test("queued rows keep the same gutter on the right as on the left", () => {
+  const view = new QueuedMessages(() => [{ text: "x".repeat(200) }], () => 2);
+  const row = stripTerminalSequences(view.render(40)[1]!);
+  // Two columns of gutter each side: 38 columns total, 36 for the content.
+  assert.equal(row.length, 38);
+  assert.ok(row.startsWith("  1. "));
+  assert.ok(row.endsWith("…"));
+});
+
 test("panel overlay insets content from the side borders", () => {
   const child = { invalidate() {}, render: () => ["hello", "world"] };
   const panel = new PanelOverlay("Tasks", child);
