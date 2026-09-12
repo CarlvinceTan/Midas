@@ -26,15 +26,12 @@ const yellow = (lines: string[]): boolean => lines.some((line) => line.includes(
 test("programmatic image chips render yellow, are atomic, and delete as a unit", () => {
   const editor = new Editor(tui, theme, { paddingX: 0 });
   editor.insertImageAttachment("/tmp/My Screenshot 2026.png");
-  assert.equal(editor.getText(), "[Image: My Screenshot 2026.png] ");
+  assert.equal(editor.getText(), "[Image: My Screenshot 2026.png]");
   assert.deepEqual(editor.getImageAttachments(), [
     { marker: "[Image: My Screenshot 2026.png]", path: "/tmp/My Screenshot 2026.png" },
   ]);
   assert.ok(yellow(editor.render(60)));
-  // The auto-added space is not part of the chip: the first backspace removes
-  // only the space, the next removes the whole chunk as one unit.
-  editor.handleInput("\x7f");
-  assert.equal(editor.getText(), "[Image: My Screenshot 2026.png]");
+  // No trailing space at the end of the input, so the chip deletes as one unit.
   editor.handleInput("\x7f");
   assert.equal(editor.getText(), "");
   assert.deepEqual(editor.getImageAttachments(), []);
@@ -43,7 +40,7 @@ test("programmatic image chips render yellow, are atomic, and delete as a unit",
 test("a typed image path collapses into a chip", () => {
   const editor = new Editor(tui, theme, { paddingX: 0 });
   for (const char of "/tmp/another shot.png") editor.handleInput(char);
-  assert.equal(editor.getText(), "[Image: another shot.png] ");
+  assert.equal(editor.getText(), "[Image: another shot.png]");
   assert.equal(editor.getImageAttachments()[0]?.path, "/tmp/another shot.png");
 });
 
@@ -86,7 +83,7 @@ test("the leading ! of a shell command takes the border color", () => {
 test("bracketed paste of an image path becomes a chip, large text a yellow marker", () => {
   const image = new Editor(tui, theme, { paddingX: 0 });
   image.handleInput("\x1b[200~/tmp/pasted shot.png\x1b[201~");
-  assert.equal(image.getText(), "[Image: pasted shot.png] ");
+  assert.equal(image.getText(), "[Image: pasted shot.png]");
   assert.equal(image.getImageAttachments()[0]?.path, "/tmp/pasted shot.png");
 
   const text = new Editor(tui, theme, { paddingX: 0 });
