@@ -16,7 +16,7 @@ const PASTE_MARKER_SINGLE = /^\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]$/;
 const IMAGE_MARKER_REGEX = /\[Image: [^\]\n]*\]/g;
 const IMAGE_MARKER_SINGLE = /^\[Image: [^\]\n]*\]$/;
 /** Paths that become image chips when pasted/typed. */
-const IMAGE_PATH_REGEX = /(?:^|[\s'"(])((?:\/|~\/)[^\n]*?\.(?:png|jpe?g|gif|webp|bmp|heic|heif|tiff?))$/i;
+const IMAGE_PATH_REGEX = /(?:^|[\s'"(])((?:\/|~\/)[^\n]*?\.(?:png|jpe?g|gif|webp|bmp|heic|heif|tiff?))['")]?$/i;
 /** Check if a segment is an atomic marker (paste chunk or image chip). */
 function isPasteMarker(segment) {
     return (segment.length >= 10 && PASTE_MARKER_SINGLE.test(segment)) || IMAGE_MARKER_SINGLE.test(segment);
