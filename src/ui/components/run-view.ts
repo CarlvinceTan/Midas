@@ -275,11 +275,15 @@ export class RunView implements Component {
     if (event?.type !== "click" || event?.button !== "left") return undefined;
     if (this.headerStart !== undefined && event.y >= this.headerStart && event.y < (this.headerEnd ?? this.headerStart + 1)) {
       this.expanded = !this.expanded;
+      this.cache = undefined;
       return { handled: true };
     }
     for (const range of this.ranges) {
       if (event.y < range.start || event.y >= range.end) continue;
-      return range.component.handleMouse?.({ ...event, y: event.y - range.start, height: range.end - range.start });
+      const result = range.component.handleMouse?.({ ...event, y: event.y - range.start, height: range.end - range.start });
+      // Nested rows keep their own expand state, which the cache key can't see.
+      if (result?.handled) this.cache = undefined;
+      return result;
     }
     return undefined;
   }
