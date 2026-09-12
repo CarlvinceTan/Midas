@@ -51,6 +51,16 @@ function baseName(path) {
     return parts[parts.length - 1] || path;
 }
 /**
+ * Display name for an image chip. macOS screenshot names carry a narrow
+ * no-break space (U+202F) before am/pm, whose rendered width disagrees with the
+ * measured width and shifts following glyphs. Show a normal space instead; the
+ * real path (kept separately) is unchanged.
+ */
+const UNICODE_SPACE_REGEX = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g;
+function displayImageName(name) {
+    return name.replace(UNICODE_SPACE_REGEX, " ");
+}
+/**
  * A segmenter that wraps Intl.Segmenter and merges graphemes that fall
  * within paste markers into single atomic segments.  This makes cursor
  * movement, deletion, word-wrap, etc. treat paste markers as single units.
@@ -1005,7 +1015,7 @@ export class Editor {
     insertImageAttachment(path, displayName) {
         if (!path)
             return;
-        const name = displayName || baseName(path);
+        const name = displayImageName(displayName || baseName(path));
         const marker = `[Image: ${name}]`;
         this.imageAttachments.set(marker, path);
         // Trailing space is separate from the chip so typing continues cleanly;
@@ -1045,7 +1055,7 @@ export class Editor {
             return false;
         const path = match[1];
         const start = this.state.cursorCol - path.length;
-        const marker = `[Image: ${baseName(path)}]`;
+        const marker = `[Image: ${displayImageName(baseName(path))}]`;
         this.imageAttachments.set(marker, path);
         // Trailing space stays outside the chip (delete it first, then the chip).
         // Reuse an existing space rather than adding a second one.

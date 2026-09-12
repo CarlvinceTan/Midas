@@ -6,6 +6,14 @@ const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
 /**
+ * macOS screenshot names contain a narrow no-break space (U+202F) before am/pm,
+ * which renders at a width that disagrees with the measured width and shifts the
+ * following glyphs. Display it as a normal space (content sent to the agent is
+ * unaffected — this only affects the transcript rendering).
+ */
+const UNICODE_SPACE_REGEX = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g;
+
+/**
  * User prompt card: markdown text inside a rounded, coloured border. Ported from
  * pi's user-message component (the published build renders a borderless
  * background box), so midas keeps the bordered prompt styling.
@@ -25,7 +33,7 @@ export class UserPromptCard extends Container {
     const contentBox = new Box(this.outputPad, 0);
     contentBox.addChild(
       new Markdown(
-        this.text,
+        this.text.replace(UNICODE_SPACE_REGEX, " "),
         0,
         0,
         getMarkdownTheme(),
