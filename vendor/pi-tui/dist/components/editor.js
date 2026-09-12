@@ -1018,10 +1018,10 @@ export class Editor {
         const name = displayImageName(displayName || baseName(path));
         const marker = `[Image: ${name}]`;
         this.imageAttachments.set(marker, path);
-        // A separating space is only useful when text follows the chip; at the
-        // end of the input it just looks like part of the chip.
+        // Always leave a plain space after the chip so following text does not
+        // glue onto it. The space is ordinary buffer text, not part of the chip.
         const currentLine = this.state.lines[this.state.cursorLine] || "";
-        const separator = this.state.cursorCol >= currentLine.length || currentLine[this.state.cursorCol] === " " ? "" : " ";
+        const separator = this.state.cursorCol < currentLine.length && currentLine[this.state.cursorCol] === " " ? "" : " ";
         this.insertTextAtCursor(marker + separator);
     }
     /** Image chips currently present in the text, with their source paths. */
@@ -1056,8 +1056,9 @@ export class Editor {
         const start = this.state.cursorCol - path.length;
         const marker = `[Image: ${displayImageName(baseName(path))}]`;
         this.imageAttachments.set(marker, path);
-        // Only separate the chip from following text (see insertImageAttachment).
-        const separator = this.state.cursorCol >= line.length || line[this.state.cursorCol] === " " ? "" : " ";
+        // Always separate the chip from following text with a plain space (see
+        // insertImageAttachment); don't double up on an existing one.
+        const separator = this.state.cursorCol < line.length && line[this.state.cursorCol] === " " ? "" : " ";
         this.state.lines[this.state.cursorLine] =
             line.slice(0, start) + marker + separator + line.slice(this.state.cursorCol);
         this.setCursorCol(start + marker.length + separator.length);
