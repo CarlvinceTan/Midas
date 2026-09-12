@@ -60,7 +60,10 @@ export class UserPromptCard extends Container {
         : contentLines.map((line) => truncateToWidth(line, cardWidth, ""));
 
     for (let i = 0; i < lines.length; i++) {
-      lines[i] = " ".repeat(margin) + lines[i]! + " ".repeat(margin);
+      // Trim trailing padding: writing into the terminal's final column can make
+      // it auto-wrap and overwrite the next row (text appears "squashed"). The
+      // TUI clears the rest of each row anyway.
+      lines[i] = (" ".repeat(margin) + lines[i]! + " ".repeat(margin)).replace(/ +$/, "");
     }
     lines[0] = OSC133_ZONE_START + lines[0];
     lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1]!;
