@@ -1018,11 +1018,10 @@ export class Editor {
         const name = displayImageName(displayName || baseName(path));
         const marker = `[Image: ${name}]`;
         this.imageAttachments.set(marker, path);
-        // Trailing space is separate from the chip so typing continues cleanly;
-        // backspace removes the space first, then the chip as one unit. Don't add
-        // a second one when whitespace already follows the cursor.
+        // A separating space is only useful when text follows the chip; at the
+        // end of the input it just looks like part of the chip.
         const currentLine = this.state.lines[this.state.cursorLine] || "";
-        const separator = currentLine[this.state.cursorCol] === " " ? "" : " ";
+        const separator = this.state.cursorCol >= currentLine.length || currentLine[this.state.cursorCol] === " " ? "" : " ";
         this.insertTextAtCursor(marker + separator);
     }
     /** Image chips currently present in the text, with their source paths. */
@@ -1057,9 +1056,8 @@ export class Editor {
         const start = this.state.cursorCol - path.length;
         const marker = `[Image: ${displayImageName(baseName(path))}]`;
         this.imageAttachments.set(marker, path);
-        // Trailing space stays outside the chip (delete it first, then the chip).
-        // Reuse an existing space rather than adding a second one.
-        const separator = line[this.state.cursorCol] === " " ? "" : " ";
+        // Only separate the chip from following text (see insertImageAttachment).
+        const separator = this.state.cursorCol >= line.length || line[this.state.cursorCol] === " " ? "" : " ";
         this.state.lines[this.state.cursorLine] =
             line.slice(0, start) + marker + separator + line.slice(this.state.cursorCol);
         this.setCursorCol(start + marker.length + separator.length);
