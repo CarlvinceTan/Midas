@@ -22,13 +22,16 @@ function isPasteMarker(segment) {
     return (segment.length >= 10 && PASTE_MARKER_SINGLE.test(segment)) || IMAGE_MARKER_SINGLE.test(segment);
 }
 /** Render atomic markers in yellow so chips stand out from editable text. */
-function styleMarkers(text, bangColor) {
+function styleMarkers(text, bangColor, validImages, validPasteIds) {
     const styled = styleBashPrefix(text, bangColor);
     if (!styled.includes("[paste #") && !styled.includes("[Image: "))
         return styled;
     return styled
-        .replace(PASTE_MARKER_REGEX, (m) => `\x1b[33m${m}\x1b[39m`)
-        .replace(IMAGE_MARKER_REGEX, (m) => `\x1b[33m${m}\x1b[39m`);
+        .replace(PASTE_MARKER_REGEX, (m) => {
+            const id = Number.parseInt(m.slice(8), 10);
+            return validPasteIds && validPasteIds.has(id) ? `\x1b[33m${m}\x1b[39m` : m;
+        })
+        .replace(IMAGE_MARKER_REGEX, (m) => (validImages && validImages.has(m) ? `\x1b[33m${m}\x1b[39m` : m));
 }
 /**
  * Color a leading `!`/`!!` shell prefix with the editor's border color, so the
@@ -54,9 +57,9 @@ function baseName(path) {
  *
  * Only markers whose numeric ID exists in `validIds` are merged.
  */
-function segmentWithMarkers(text, baseSegmenter, validIds) {
+function segmentWithMarkers(text, baseSegmenter, validIds, validImages) {
     const hasPaste = validIds.size > 0 && text.includes("[paste #");
-    const hasImage = text.includes("[Image: ");
+    const hasImage = (validImages ? validImages.size > 0 : false) && text.includes("[Image: ");
     // Fast path: no markers in the text.
     if (!hasPaste && !hasImage) {
         return baseSegmenter.segment(text);
@@ -74,6 +77,8 @@ function segmentWithMarkers(text, baseSegmenter, validIds) {
     }
     if (hasImage) {
         for (const m of text.matchAll(IMAGE_MARKER_REGEX)) {
+            if (validImages && !validImages.has(m[0]))
+                continue;
             markers.push({ start: m.index, end: m.index + m[0].length });
         }
     }
@@ -314,9 +319,13 @@ export class Editor {
     validPasteIds() {
         return new Set(this.pastes.keys());
     }
+    /** Image-chip markers created by pasting (typed `[Image: ...]` text is plain). */
+    validImageMarkers() {
+        return new Set(this.imageAttachments.keys());
+    }
     /** Segment text with paste-marker awareness, only merging markers with valid IDs. */
     segment(text, mode) {
-        return segmentWithMarkers(text, mode === "word" ? wordSegmenter : graphemeSegmenter, this.validPasteIds());
+        return segmentWithMarkers(text, mode === "word" ? wordSegmenter : graphemeSegmenter, this.validPasteIds(), this.validImageMarkers());
     }
     getPaddingX() {
         return this.paddingX;
@@ -508,7 +517,7 @@ export class Editor {
             const padding = " ".repeat(Math.max(0, contentWidth - lineVisibleWidth));
             const lineRightPadding = cursorInPadding ? rightPadding.slice(1) : rightPadding;
             // Render the line (no side borders, just horizontal lines above and below)
-            result.push(`${leftPadding}${styleMarkers(displayText, this.borderColor)}${padding}${lineRightPadding}`);
+            result.push(`${leftPadding}${styleMarkers(displayText, this.borderColor, this.validImageMarkers(), this.validPasteIds())}${padding}${lineRightPadding}`);
         }
         // Render bottom border (with scroll indicator if more content below)
         const linesBelow = layoutLines.length - (this.scrollOffset + visibleLines.length);
