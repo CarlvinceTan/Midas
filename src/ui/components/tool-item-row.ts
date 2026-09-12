@@ -24,9 +24,9 @@ export class ToolItemRow implements Component {
     const pad = this.getPad();
     const padStr = " ".repeat(pad);
     const expanded = this.expanded || this.expandAll();
-    // Header sits at the row pad; preview lines indent two more columns.
-    const headWidth = Math.max(1, width - pad);
-    const bodyWidth = Math.max(1, width - pad - 2);
+    // Mirror the left indent on the right so rows never touch the terminal edge.
+    const headWidth = Math.max(1, width - pad * 2);
+    const bodyWidth = Math.max(1, width - pad * 2 - 2);
     const rendered = renderTool(this.part, headWidth, expanded, this.cwd);
     return rendered.map((line, index) =>
       index === 0
