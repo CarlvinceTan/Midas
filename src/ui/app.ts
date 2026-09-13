@@ -65,7 +65,7 @@ import { SearchPicker } from "./components/search-picker.ts";
 import { readDraft, writeDraft, type StoredDraft } from "../lib/drafts.ts";
 import { readSessionState, writeSessionState, type StoredBash } from "../lib/session-state.ts";
 import { resolveCdTarget } from "../lib/shell.ts";
-import { agentCallerLabel, agentSettingsRows, groupAgentNames, selectableAgentNames, BOARD_WORKER_AGENT, DEFAULT_INTERACTIVE_AGENT, ORCHESTRATOR_AGENT } from "../lib/agents.ts";
+import { agentSettingsRows, groupAgentNames, selectableAgentNames, BOARD_WORKER_AGENT, DEFAULT_INTERACTIVE_AGENT, ORCHESTRATOR_AGENT } from "../lib/agents.ts";
 import { listSkills, loadPiSettings, piAgentDir, readAuthedProviders, readLastSelectedModel, removeAuthedProvider, rowPad, thinkingLevelFor, updateGlobalSetting, updateModelThinkingLevel, writeLastSelectedModel, type PiSettings, type SkillEntry, midasConfigDir, midasProjectDir, agentsGlobalDir, agentsProjectDir } from "../config/pi.ts";
 import { loadCustomCommands, renderCommandTemplate, type CustomCommand } from "../config/commands.ts";
 import { spawn } from "node:child_process";
@@ -152,6 +152,15 @@ export function voiceToggle(args: string, current: boolean): boolean | undefined
  * Title drawn into the input frame's top rule. Voice dictation (Listening)
  * outranks the orchestrator's Multitask mode; with both off there is no title.
  */
+/**
+ * Model-ref precedence for an agent: a session `/model` choice, then a specific
+ * `/agents` setting, then the agent's own config, then its "Last Used". The
+ * global last-selected model remains the caller's final fallback.
+ */
+export function pickAgentModelRef(input: { session?: string; override?: string; configured?: string; lastUsed?: string }): string | undefined {
+  return input.session ?? input.override ?? input.configured ?? input.lastUsed;
+}
+
 export function voiceFrameTitle(input: { voice: boolean; orchestrator: boolean }): string | undefined {
   // Multitask is indicated by the tomato frame colour, not a title.
   return input.voice ? "Listening" : undefined;
@@ -593,6 +602,8 @@ export class MidasApp {
   /** True while `/voice` microphone dictation streams into the input. */
   private voiceActive = false;
   private voiceBase = "";
+  /** Session-local per-agent model overrides chosen with `/model`. */
+  private sessionAgentModels = new Map<string, string>();
   /**
    * Speech-to-text backend seam. A later task wires the real controller; with
    * no controller installed the mode still toggles and repaints cleanly.
@@ -1145,6 +1156,27 @@ export class MidasApp {
     this.tui.requestRender();
   }
 
+  /** Per-agent "Last Used" refs; updated by `/model`, never a persisted override. */
+  private agentLastUsedMap(): Record<string, string> {
+    const value = this.options.settings.agentLastUsed;
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? { ...(value as Record<string, string>) }
+      : {};
+  }
+
+  private setAgentLastUsed(agent: string, ref: string): void {
+    const map = this.agentLastUsedMap();
+    map[agent] = ref;
+    (this.options.settings as Record<string, unknown>).agentLastUsed = map;
+    updateGlobalSetting("agentLastUsed", map);
+  }
+
+  /** Model declared in the agent's own opencode config, if any. */
+  private agentConfiguredModel(agent: string): string | undefined {
+    const entry = this.agentCatalog.find((candidate) => candidate.name === agent);
+    return entry?.model ? `${entry.model.providerID}/${entry.model.modelID}` : undefined;
+  }
+
   private resolveModelRef(ref: string | undefined): ModelChoice | undefined {
     if (!ref || !ref.includes("/")) return undefined;
     const slash = ref.indexOf("/");
@@ -1160,9 +1192,18 @@ export class MidasApp {
     );
   }
 
-  /** The model actually used: the active agent's override, else the global one. */
+  /**
+   * The model actually used. Precedence: this session's `/model` choice for the
+   * agent, then its `/agents` specific model, then its own config, then its
+   * "Last Used", and finally the global last-selected model.
+   */
   private effectiveModel(): ModelChoice | undefined {
-    return this.resolveModelRef(this.agentModelMap()[this.activeAgent]) ?? this.model;
+    return this.resolveModelRef(pickAgentModelRef({
+      session: this.sessionAgentModels.get(this.activeAgent),
+      override: this.agentModelMap()[this.activeAgent],
+      configured: this.agentConfiguredModel(this.activeAgent),
+      lastUsed: this.agentLastUsedMap()[this.activeAgent],
+    })) ?? this.model;
   }
 
   private syncControllerModel(): void {
@@ -2656,26 +2697,21 @@ export class MidasApp {
     });
     const items = agents.map(({ agent, label, group }) => {
       const configured = agent.model ? `${agent.model.providerID}/${agent.model.modelID}` : undefined;
-      const selected = this.resolveModelRef(overrides[agent.name] ?? configured);
-      const callerLabel = agentCallerLabel(this.agentCatalog, agent.name);
-      const global = this.model;
-      const defaultLabel =
-        callerLabel
-          ? `Default (${callerLabel})`
-          : global
-            ? `Default (${modelDisplayLabel(global)})`
-            : "Default (global model)";
+      const override = this.resolveModelRef(overrides[agent.name]);
+      // No specific model: fall back to what this agent last used, then its own
+      // config, then the global last-selected model.
+      const lastUsed = this.resolveModelRef(this.agentLastUsedMap()[agent.name]) ?? this.resolveModelRef(configured) ?? this.model;
+      const lastUsedLabel = lastUsed ? `Last Used (${modelDisplayLabel(lastUsed)})` : "Last Used";
       return {
         id: `agent:${agent.name}`,
         label,
-        currentValue: selected ? modelDisplayLabel(selected) : defaultLabel,
+        currentValue: override ? modelDisplayLabel(override) : lastUsedLabel,
         group,
         submenu: (_current: string, done: (value?: string) => void) => {
-          // "Default" means no per-agent override. For a subagent, name the
-          // agent(s) it can be invoked by (where its model is inherited from);
-          // fall back to the global model for agents nothing can call.
+          // "Last Used" means no per-agent override; the agent uses the model it
+          // last ran with, or its configured/global default.
           const choices: ModelChoice[] = [
-            { providerID: "", modelID: "", name: defaultLabel, providerName: "" },
+            { providerID: "", modelID: "", name: lastUsedLabel, providerName: "" },
             ...this.models,
           ];
           // Show the choice as a breadcrumb in the panel border instead of
@@ -2690,7 +2726,7 @@ export class MidasApp {
             (choice) => {
               if (!choice.providerID) {
                 this.setAgentModel(agent.name, undefined);
-                finish(defaultLabel);
+                finish(lastUsedLabel);
               } else {
                 this.setAgentModel(agent.name, `${choice.providerID}/${choice.modelID}`);
                 finish(modelDisplayLabel(choice));
@@ -2910,6 +2946,8 @@ export class MidasApp {
       this.saveDraftNow();
       this.persistSessionState();
       await this.options.controller.newSession();
+      // Session model choices do not survive into a new session.
+      this.sessionAgentModels.clear();
       // Multitask is session-local. Every new conversation starts in the normal
       // interactive agent; the user explicitly enables the orchestrator again.
       this.setActiveAgent(DEFAULT_AGENT);
@@ -3166,6 +3204,9 @@ export class MidasApp {
         await this.changeDirectory(target);
       }
       await this.options.controller.resume(session.id);
+      // Resuming returns each agent to its configured/Last Used model.
+      this.sessionAgentModels.clear();
+      this.syncControllerModel();
       await this.restoreSessionShellState(session.id);
       this.restoreDraft(this.options.controller.id);
       this.seedHistoryFromTranscript();
@@ -3535,9 +3576,12 @@ export class MidasApp {
     const picker = new ModelPicker(
       this.models,
       (choice) => {
+        const ref = `${choice.providerID}/${choice.modelID}`;
         this.model = choice;
-        // /model sets the current agent's model too, so each agent remembers its own.
-        this.setAgentModel(this.activeAgent, `${choice.providerID}/${choice.modelID}`);
+        // Session-local for the active agent; persisted only as its "Last Used"
+        // so a new session returns to the /agents specific model.
+        this.sessionAgentModels.set(this.activeAgent, ref);
+        this.setAgentLastUsed(this.activeAgent, ref);
         this.options.controller.setModel({ providerID: choice.providerID, modelID: choice.modelID });
         writeLastSelectedModel({ providerID: choice.providerID, modelID: choice.modelID, name: choice.name });
         this.restoreThinkingForModel(choice.providerID, choice.modelID);

@@ -4,7 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme as initPiTheme } from "@earendil-works/pi-coding-agent";
 import { stripAnsi } from "../lib/ansi.ts";
 import { initTheme } from "../theme/theme.ts";
-import { submitAction, ensureDispatcherOnSubmit, WorkingIndicator, voiceToggle, voiceFrameTitle, exitVoiceOnEscape } from "./app.ts";
+import { submitAction, ensureDispatcherOnSubmit, WorkingIndicator, voiceToggle, voiceFrameTitle, exitVoiceOnEscape, pickAgentModelRef } from "./app.ts";
 
 initPiTheme(undefined, false);
 initTheme(undefined);
@@ -105,11 +105,19 @@ test("voice toggles on and off explicitly and flips with no argument", () => {
   assert.equal(voiceToggle("bogus", false), undefined);
 });
 
-test("the Listening title outranks Multitask and clears when both are off", () => {
+test("the Listening title shows only while voice is active", () => {
   assert.equal(voiceFrameTitle({ voice: true, orchestrator: true }), "Listening");
   assert.equal(voiceFrameTitle({ voice: true, orchestrator: false }), "Listening");
   assert.equal(voiceFrameTitle({ voice: false, orchestrator: true }), undefined);
   assert.equal(voiceFrameTitle({ voice: false, orchestrator: false }), undefined);
+});
+
+test("agent model precedence: session, override, config, last used", () => {
+  assert.equal(pickAgentModelRef({ session: "s", override: "o", configured: "c", lastUsed: "l" }), "s");
+  assert.equal(pickAgentModelRef({ override: "o", configured: "c", lastUsed: "l" }), "o");
+  assert.equal(pickAgentModelRef({ configured: "c", lastUsed: "l" }), "c");
+  assert.equal(pickAgentModelRef({ lastUsed: "l" }), "l");
+  assert.equal(pickAgentModelRef({}), undefined);
 });
 
 test("escape exits voice only while listening and not in autocomplete", () => {

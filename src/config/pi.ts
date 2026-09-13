@@ -74,6 +74,8 @@ export interface PiSettings {
   taskConcurrency?: number;
   /** Command whose stdout streams JSONL STT events for `/voice`. */
   voiceSttCommand?: string;
+  /** Per-agent "Last Used" model ref (`provider/model`), used when no specific override is set. */
+  agentLastUsed?: Record<string, string>;
   [key: string]: unknown;
 }
 
