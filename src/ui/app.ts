@@ -98,6 +98,34 @@ function directoryExists(path: string | undefined): path is string {
   }
 }
 
+/** How a submitted draft is routed once the editor hands it to `handleSubmit`. */
+export type SubmitAction = "send" | "steer" | "queue" | "requeue" | "command";
+
+/**
+ * Decide how a submission should be routed. Kept pure (no editor/controller
+ * access) so the routing rules — in particular multitask's immediate steer —
+ * can be exercised without standing up a full app.
+ *
+ * - `command`: slash commands keep their existing, name-specific rules.
+ * - `send`: dispatch a normal prompt as a fresh turn.
+ * - `steer`: deliver a normal prompt into the running turn right now.
+ * - `queue`: park a normal prompt in the follow-up queue.
+ * - `requeue`: return an edited follow-up to its original queue slot.
+ */
+export function submitAction(input: {
+  multitask: boolean;
+  runActive: boolean;
+  isCommand: boolean;
+  editing: boolean;
+}): SubmitAction {
+  if (input.isCommand) return "command";
+  if (!input.runActive) return "send";
+  // Multitask submits into the running turn (the same path as cmd+enter)
+  // instead of parking in the follow-up queue.
+  if (input.multitask) return "steer";
+  return input.editing ? "requeue" : "queue";
+}
+
 interface LoginEntry {
   providerId: string;
   providerName: string;
@@ -1582,8 +1610,14 @@ export class MidasApp {
     this.editingQueue = undefined;
     this.editor.addToHistory(trimmed);
     this.editor.setText("");
+    const action = submitAction({
+      multitask: this.activeAgent === ORCHESTRATOR_AGENT,
+      runActive: this.isRunActive(),
+      isCommand: trimmed.startsWith("/"),
+      editing: editing !== undefined,
+    });
     if (trimmed === "/tasks") return this.openTasks();
-    if (trimmed.startsWith("/")) {
+    if (action === "command") {
       const match = trimmed.match(/^\/([^\s]+)([\s\S]*)$/);
       const typedName = match?.[1] ?? "";
       const rest = match?.[2] ?? "";
@@ -1631,8 +1665,18 @@ export class MidasApp {
     this.maybeGenerateTitle(true, trimmed);
     const prompt =
       editing && editing.prompt.text === trimmed ? editing.prompt : this.preparePrompt(trimmed, imageAttachments);
-    // While the agent is working, queue the message as a follow-up.
-    if (this.isRunActive()) {
+    if (action === "steer") {
+      // Multitask delivers busy input into the running turn (the same path as
+      // cmd+enter) rather than queuing it as a follow-up. `pendingSteers` is
+      // appended to, so back-to-back submissions are all kept.
+      this.steerPrompt(prompt, trimmed);
+      return;
+    }
+    if (action === "queue") {
+      this.enqueue(prompt);
+      return;
+    }
+    if (action === "requeue") {
       if (editing) this.enqueueAt(editing.index, prompt);
       else this.enqueue(prompt);
       return;
@@ -1996,10 +2040,19 @@ export class MidasApp {
     }
     // Resolve image chips before clearing the editor.
     const prompt = this.preparePrompt(trimmed);
-    this.pendingSteers.push({ text: prompt.text, at: Date.now() });
     this.editor.addToHistory(trimmed);
     this.editor.setText("");
-    this.flash(`Steering: ${trimmed.replace(/\s+/g, " ").slice(0, 60)}`);
+    this.steerPrompt(prompt, trimmed);
+  }
+
+  /**
+   * Deliver an already-prepared prompt into the running turn. Appends to
+   * `pendingSteers` so consecutive steers are all tracked and folded into the
+   * live run once their transcript messages land.
+   */
+  private steerPrompt(prompt: QueuedPrompt, preview: string): void {
+    this.pendingSteers.push({ text: prompt.text, at: Date.now() });
+    this.flash(`Steering: ${preview.replace(/\s+/g, " ").trim().slice(0, 60)}`);
     void this.sendPrompt(prompt.text, prompt.attachments);
   }
 
