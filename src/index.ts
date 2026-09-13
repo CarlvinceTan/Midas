@@ -101,6 +101,7 @@ Commands:
   /new /compact /sessions   session management
   /tasks                    grouped task board (Tab: groups/worktrees)
   /multitask [on|off]       orchestration + autonomous board runner (default: off)
+  /voice [on|off]           dictate into the input with the microphone (default: off)
   /reload                   reload settings, models and resources
   /mcps /skills             manage MCP servers and skills
   /login /logout            manage provider credentials
