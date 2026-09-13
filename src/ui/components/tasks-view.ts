@@ -1,4 +1,4 @@
-import { matchesKey, truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { theme, type ThemeColor } from "../../theme/theme.ts";
 import type { Task } from "../../tasks/board.ts";
 
@@ -63,7 +63,27 @@ export class TasksView implements Component {
         const status = task.merge === "merged" ? `⤵ merged → ${task.target}` : task.merge === "failed" ? "! merge failed" : task.merge === "integrating" ? "integrating…" : task.status === "completed" ? "not merged" : task.status === "blocked" ? "blocked" : waiting.length ? `waiting on ${waiting.join(", ")}` : task.status === "new" ? "ready" : task.attempts.at(-1)?.branch ?? "provisioning";
         const icon = taskIcon(task, Math.floor(Date.now() / 100));
         const color = taskIconColor(task);
-        lines.push(`${start + i === this.selected ? "→" : " "} ${color ? t.fg(color, icon) : icon} ${safe(task.id)}  ${safe(task.title)}  ${t.fg("muted", safe(status))}`);
+        // Build the row from a fixed prefix, a flexible title and a fixed status.
+        // The status keeps its full width, so a narrow panel ellipsises the title
+        // instead of clipping the state the row exists to show.
+        const prefix = `${start + i === this.selected ? "→" : " "} ${color ? t.fg(color, icon) : icon} ${safe(task.id)}  `;
+        const gap = "  ";
+        const statusStyle = (text: string): string => t.fg("muted", text);
+        const titleStyle = (text: string): string => t.fg("text", text);
+        const statusText = statusStyle(safe(status));
+        const title = titleStyle(safe(task.title));
+        const room = width - visibleWidth(prefix) - visibleWidth(gap) - visibleWidth(statusText);
+        if (room >= 0) {
+          // `truncateToWidth` resets styling right before its ellipsis, so pass a
+          // pre-styled ellipsis to keep it in the title's own colour.
+          lines.push(prefix + truncateToWidth(title, room, titleStyle("…")) + gap + statusText);
+        } else {
+          // Not even the status fits: give up the title entirely, then clip the
+          // status as a last resort with its own colour on the ellipsis.
+          const statusRoom = width - visibleWidth(prefix) - visibleWidth(gap);
+          const clippedStatus = statusRoom > 0 ? truncateToWidth(statusText, statusRoom, statusStyle("…")) : "";
+          lines.push(prefix + gap + clippedStatus);
+        }
       });
       if (sorted.length > 7) lines.push(t.fg("dim", `${this.selected + 1}/${sorted.length}`));
     }
