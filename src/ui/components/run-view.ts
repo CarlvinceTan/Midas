@@ -13,6 +13,8 @@ export interface RunViewOptions {
   hideThinking: boolean;
   /** Global expand-all (ctrl+o): expands every run, chain and detail row. */
   expandedTools: boolean;
+  /** Multitask renders prompt cards in the tomato accent. */
+  multitask?: boolean;
 }
 
 type Range = { component: Component; start: number; end: number };
@@ -113,7 +115,7 @@ export class RunView implements Component {
         .join("\n")
         .trim();
       if (text) {
-        const component = new UserPromptCard(text, pad, this.borderColor, prompt.imageFilenames ?? []);
+        const component = new UserPromptCard(text, pad, this.borderColor, prompt.imageFilenames ?? [], this.options.multitask === true);
         lines.push(...component.render(width));
         promptRendered = true;
       }

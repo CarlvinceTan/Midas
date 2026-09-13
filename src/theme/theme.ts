@@ -21,7 +21,7 @@ export type ThemeColor =
   | "syntaxComment" | "syntaxKeyword" | "syntaxFunction" | "syntaxVariable" | "syntaxString"
   | "syntaxNumber" | "syntaxType" | "syntaxOperator" | "syntaxPunctuation"
   | "thinkingOff" | "thinkingMinimal" | "thinkingLow" | "thinkingMedium" | "thinkingHigh"
-  | "thinkingXhigh" | "thinkingMax" | "bashMode" | "startupHeading";
+  | "thinkingXhigh" | "thinkingMax" | "bashMode" | "startupHeading" | "multitask";
 
 export type ThemeBg =
   | "selectedBg" | "searchMatchBg" | "userMessageBg" | "customMessageBg"
@@ -136,6 +136,8 @@ function withThemeColorFallbacks(colors: Record<string, string | number>): Recor
     // Startup column headers ([Context], [Agents], …) are purple in onedark;
     // map them to the theme's purple label color with a heading fallback.
     startupHeading: colors.startupHeading ?? colors.customMessageLabel ?? colors.mdHeading ?? "",
+    // Multitask mode accent (opencode task-mode tomato).
+    multitask: colors.multitask ?? colors.error ?? "",
   };
 }
 
@@ -233,6 +235,7 @@ const FALLBACK_ONEDARK: ThemeJson = {
     syntaxNumber: "#d19a66", syntaxType: "#e5c07b", syntaxOperator: "#56b6c2", syntaxPunctuation: "#abb2bf",
     thinkingOff: "#c678dd", thinkingMinimal: "#c678dd", thinkingLow: "#c678dd", thinkingMedium: "#c678dd",
     thinkingHigh: "#c678dd", thinkingXhigh: "#c678dd", thinkingMax: "#c678dd", bashMode: "#61afef",
+    multitask: "#d17277",
   },
 };
 

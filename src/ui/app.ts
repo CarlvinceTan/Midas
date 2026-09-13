@@ -151,8 +151,8 @@ export function voiceToggle(args: string, current: boolean): boolean | undefined
  * outranks the orchestrator's Multitask mode; with both off there is no title.
  */
 export function voiceFrameTitle(input: { voice: boolean; orchestrator: boolean }): string | undefined {
-  if (input.voice) return "Listening";
-  return input.orchestrator ? "Multitask" : undefined;
+  // Multitask is indicated by the tomato frame colour, not a title.
+  return input.voice ? "Listening" : undefined;
 }
 
 /**
@@ -181,6 +181,8 @@ export interface AppOptions {
 interface TranscriptOptions {
   hideThinking: boolean;
   expandedTools: boolean;
+  /** True while multitask is active, so prompt cards render in the tomato accent. */
+  multitask?: boolean;
 }
 
 /** Renders only the transcript runs; the scroll container owns the header. */
@@ -651,7 +653,12 @@ export class MidasApp {
     }
     const thinking = typeof options.settings.defaultThinkingLevel === "string" ? options.settings.defaultThinkingLevel : "medium";
     this.thinkingLevel = thinking;
-    const borderColor = theme().getThinkingBorderColor(thinking);
+    // Resolved lazily so switching agents (multitask on/off) repaints the frame
+    // and existing prompt cards without recreating the transcript view.
+    const borderColor = (text: string): string =>
+      this.activeAgent === ORCHESTRATOR_AGENT
+        ? theme().fg("multitask", text)
+        : theme().getThinkingBorderColor(this.currentThinking())(text);
 
     const fullscreen = options.settings.tuiMode !== "regular";
     const terminal = new ProcessTerminal();
@@ -719,6 +726,7 @@ export class MidasApp {
     );
     this.transcriptOptions.hideThinking = this.hideThinking;
     this.transcriptOptions.expandedTools = this.expandedTools;
+    this.transcriptOptions.multitask = this.activeAgent === ORCHESTRATOR_AGENT;
     this.transcriptView = new TranscriptMessages(
       options.controller.transcript,
       this.transcriptOptions,
@@ -1103,7 +1111,10 @@ export class MidasApp {
     if (model) this.restoreThinkingForModel(model.providerID, model.modelID);
     this.resetStats();
     this.syncDispatcher();
-    // The input frame's "Multitask" title follows the mode.
+    // Repaint the frame and existing prompt cards in the new mode's colour.
+    this.transcriptOptions.multitask = this.activeAgent === ORCHESTRATOR_AGENT;
+    this.transcriptView?.invalidate();
+    this.applyEditorBorderColor();
     if (!this.activeOverlay) this.mountEditor();
     this.tui.requestRender();
   }
@@ -1500,18 +1511,25 @@ export class MidasApp {
   }
 
   /**
-   * Border color precedence: voice dictation (blue) wins while listening, then
-   * a real shell command, then the active thinking level.
+   * Colour precedence: voice dictation (blue) wins while listening, then a real
+   * shell command, then multitask (tomato), then the active thinking level.
+   * Multitask tints the editable text as well as the frame.
    */
   private applyEditorBorderColor(text: string = this.editor.getText()): void {
     // Only a bang at the very start is shell mode; a leading space keeps it a
     // normal prompt (and the thinking border), matching `parseShellCommand`.
     const bash = text.startsWith("! ") || text.startsWith("!! ");
+    const multitask = this.activeAgent === ORCHESTRATOR_AGENT;
     this.editor.borderColor = this.voiceActive
       ? (value: string) => theme().fg("accent", value)
       : bash
         ? (value: string) => theme().fg("bashMode", value)
-        : theme().getThinkingBorderColor(this.currentThinking());
+        : multitask
+          ? (value: string) => theme().fg("multitask", value)
+          : theme().getThinkingBorderColor(this.currentThinking());
+    this.editor.textColor = multitask && !this.voiceActive
+      ? (value: string) => theme().fg("multitask", value)
+      : undefined;
   }
 
   private toggleVoice(args: string): void {

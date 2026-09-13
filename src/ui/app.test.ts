@@ -108,7 +108,7 @@ test("voice toggles on and off explicitly and flips with no argument", () => {
 test("the Listening title outranks Multitask and clears when both are off", () => {
   assert.equal(voiceFrameTitle({ voice: true, orchestrator: true }), "Listening");
   assert.equal(voiceFrameTitle({ voice: true, orchestrator: false }), "Listening");
-  assert.equal(voiceFrameTitle({ voice: false, orchestrator: true }), "Multitask");
+  assert.equal(voiceFrameTitle({ voice: false, orchestrator: true }), undefined);
   assert.equal(voiceFrameTitle({ voice: false, orchestrator: false }), undefined);
 });
 

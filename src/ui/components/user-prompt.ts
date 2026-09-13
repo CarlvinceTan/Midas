@@ -32,6 +32,8 @@ export class UserPromptCard extends Container {
     private outputPad: number,
     private borderColor: (content: string) => string,
     imageFilenames: string[] = [],
+    /** Multitask renders the prompt body in the tomato accent too. */
+    private multitask = false,
   ) {
     super();
     // Normalize exactly like the displayed text so macOS screenshot names match.
@@ -47,9 +49,10 @@ export class UserPromptCard extends Container {
     // markers for real attachments are styled — typed `[Image: …]` text stays
     // plain. The chip is wrapped as inline code so markdown leaves it intact,
     // then the code style paints it yellow and restores the prompt text colour.
+    const promptTextColor = this.multitask ? "multitask" : "userMessageText";
     const markdownTheme = {
       ...getMarkdownTheme(),
-      code: (content: string) => `${IMAGE_MARKER_COLOR}${content}${theme().getFgAnsi("userMessageText")}`,
+      code: (content: string) => `${IMAGE_MARKER_COLOR}${content}${theme().getFgAnsi(promptTextColor)}`,
     };
     contentBox.addChild(
       new Markdown(
@@ -60,7 +63,7 @@ export class UserPromptCard extends Container {
         0,
         0,
         markdownTheme,
-        { color: (content: string) => theme().fg("userMessageText", content) },
+        { color: (content: string) => theme().fg(promptTextColor, content) },
         { preserveOrderedListMarkers: true, preserveBackslashEscapes: true },
       ),
     );
