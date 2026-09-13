@@ -81,6 +81,35 @@ test("blocked rows paint the cross red", () => {
   assert.ok(line.includes(theme().fg("error", "✗")), `missing red cross: ${line}`);
 });
 
+test("merge-failed rows paint only the leading bang red", () => {
+  const line = renderRow({ merge: "failed" });
+  const errorAnsi = theme().getFgAnsi("error");
+  const mutedAnsi = theme().getFgAnsi("muted");
+
+  assert.ok(stripAnsi(line).includes("! merge failed"), `status text changed: ${line}`);
+  assert.ok(
+    line.includes(theme().fg("error", "!") + theme().fg("muted", " merge failed")),
+    `bang is not red or the remainder is not muted: ${line}`,
+  );
+  assert.equal(activeColor(line, line.indexOf("!")), errorAnsi, `bang is not error-coloured: ${line}`);
+  assert.equal(activeColor(line, line.indexOf("merge failed")), mutedAnsi, `remainder is not muted: ${line}`);
+});
+
+test("merged rows keep the muted full status", () => {
+  const line = renderRow({ status: "completed", merge: "merged", target: "main" });
+  assert.ok(line.includes(theme().fg("muted", "⤵ merged → main")), `merged status changed: ${line}`);
+  assert.ok(!line.includes(theme().fg("error", "!")), `merged row gained a red bang: ${line}`);
+});
+
+test("merge-failed bang stays red when the status is truncated", () => {
+  const view = new TasksView(() => {});
+  view.tasks = [task({ merge: "failed" })];
+  const line = view.render(13).find((candidate) => candidate.includes("T1"))!;
+  const bangAt = line.indexOf("!");
+  assert.ok(bangAt >= 0, `bang was clipped away: ${line}`);
+  assert.equal(activeColor(line, bangAt), theme().getFgAnsi("error"), `bang lost its colour: ${line}`);
+});
+
 test("keeps the full status and ellipsises the title in its own colour", () => {
   const title = "Implement a very long feature that will not fit in a narrow panel";
   const view = new TasksView(() => {});

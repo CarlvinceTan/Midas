@@ -74,7 +74,11 @@ export class TasksView implements Component {
         const gap = "  ";
         const statusStyle = (text: string): string => t.fg("muted", text);
         const titleStyle = (text: string): string => t.fg("text", text);
-        const statusText = statusStyle(safe(status));
+        // The merge-failed `!` is a failure marker, so paint just that glyph red
+        // while the remainder keeps the muted status colour.
+        const statusText = task.merge === "failed"
+          ? `${t.fg("error", "!")}${statusStyle(" merge failed")}`
+          : statusStyle(safe(status));
         const title = titleStyle(safe(task.title));
         const room = width - visibleWidth(prefix) - visibleWidth(gap) - visibleWidth(statusText);
         if (room >= 0) {
