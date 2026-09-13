@@ -4,7 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme as initPiTheme } from "@earendil-works/pi-coding-agent";
 import { stripAnsi } from "../lib/ansi.ts";
 import { initTheme } from "../theme/theme.ts";
-import { submitAction, ensureDispatcherOnSubmit, WorkingIndicator, voiceToggle, voiceFrameTitle, exitVoiceOnEscape, pickAgentModelRef, pickAgentThinking } from "./app.ts";
+import { submitAction, ensureDispatcherOnSubmit, WorkingIndicator, voiceToggle, voiceFrameTitle, exitVoiceOnEscape, pickAgentModelRef, pickAgentThinking, resolveSlashName } from "./app.ts";
 
 initPiTheme(undefined, false);
 initTheme(undefined);
@@ -124,6 +124,16 @@ test("agent reasoning precedence: own level, model level, fallback", () => {
   assert.equal(pickAgentThinking({ override: "high", model: "low", fallback: "medium" }), "high");
   assert.equal(pickAgentThinking({ model: "low", fallback: "medium" }), "low");
   assert.equal(pickAgentThinking({ fallback: "medium" }), "medium");
+});
+
+test("slash names resolve exactly, then by the top fuzzy match", () => {
+  const names = ["model", "agents", "multitask", "thinking", "tasks", "exit"];
+  assert.equal(resolveSlashName(names, "model"), "model");
+  assert.equal(resolveSlashName(names, "mdl"), "model");
+  assert.equal(resolveSlashName(names, "mta"), "multitask");
+  assert.equal(resolveSlashName(names, "taks"), "tasks");
+  // No fuzzy match: keep what was typed so the command reports itself unknown.
+  assert.equal(resolveSlashName(names, "zzz"), "zzz");
 });
 
 test("escape exits voice only while listening and not in autocomplete", () => {

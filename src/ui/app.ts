@@ -2,6 +2,7 @@ import {
   CombinedAutocompleteProvider,
   Container,
   Editor,
+  fuzzyFilter,
   isViewportTUI,
   matchesKey,
   ProcessTerminal,
@@ -165,6 +166,15 @@ export function pickAgentModelRef(input: { session?: string; override?: string; 
 /** Reasoning precedence: the agent's own level, then the model's, then current. */
 export function pickAgentThinking(input: { override?: string; model?: string; fallback?: string }): string | undefined {
   return input.override ?? input.model ?? input.fallback;
+}
+
+/**
+ * Resolve a typed slash name to a command: an exact name wins, otherwise the
+ * top fuzzy match (the same order the autocomplete popup shows).
+ */
+export function resolveSlashName(names: string[], name: string): string {
+  if (names.includes(name)) return name;
+  return fuzzyFilter(names, name, (candidate) => candidate)[0] ?? name;
 }
 
 export function voiceFrameTitle(input: { voice: boolean; orchestrator: boolean }): string | undefined {
@@ -2338,12 +2348,9 @@ export class MidasApp {
     ];
   }
 
-  /** First command whose name starts with `name`, i.e. the top autocomplete match. */
+  /** Best fuzzy command match, i.e. the top autocomplete result. */
   private resolveSlashName(name: string): string {
-    const names = this.slashNames();
-    if (names.includes(name)) return name;
-    const lower = name.toLowerCase();
-    return names.find((candidate) => candidate.toLowerCase().startsWith(lower)) ?? name;
+    return resolveSlashName(this.slashNames(), name);
   }
 
   private installAutocomplete(): void {
