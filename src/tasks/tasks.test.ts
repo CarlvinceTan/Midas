@@ -303,6 +303,49 @@ test("TaskBoard.add is unaffected by the authoring gate (internal path)", (t) =>
   assert.equal(board.read().tasks.length, 1);
 });
 
+test("editing a task bumps its revision and re-queues finished work", (t) => {
+  const { board } = fixture(t);
+  const task = board.add(contract);
+  assert.equal(task.revision, 1);
+  const edited = board.edit(task.id, { title: "Revised", checks: ["test -f other.txt"] });
+  assert.equal(edited.title, "Revised");
+  assert.deepEqual(edited.checks, ["test -f other.txt"]);
+  assert.equal(edited.revision, 2);
+  // A blocked or completed-but-unmerged task re-queues so the edit actually runs.
+  board.update(task.id, (t) => { t.status = "completed"; });
+  board.edit(task.id, { instructions: "new instructions" });
+  assert.equal(board.get(task.id).status, "new");
+  assert.equal(board.get(task.id).merge, "not-merged");
+  assert.equal(board.get(task.id).revision, 3);
+});
+
+test("edit validates fields and refuses merged/cancelled tasks", (t) => {
+  const { board } = fixture(t);
+  const a = board.add(contract);
+  const b = board.add({ ...contract, title: "Second" });
+  assert.throws(() => board.edit(a.id, { checks: [] }), /checks/);
+  assert.throws(() => board.edit(a.id, { title: "" }), /title/);
+  assert.throws(() => board.edit(a.id, { dependencies: ["T99"] }), /Unknown dependency/);
+  assert.throws(() => board.edit(a.id, { dependencies: [a.id] }), /itself/);
+  board.update(a.id, (t) => { t.merge = "merged"; });
+  assert.throws(() => board.edit(a.id, { title: "x" }), /merged/);
+  board.update(b.id, (t) => { t.status = "cancelled"; });
+  assert.throws(() => board.edit(b.id, { title: "x" }), /cancelled/);
+});
+
+test("task updates require a live dispatcher lease", async (t) => {
+  const { cwd, board } = fixture(t);
+  const contractPath = join(cwd, "contract.json");
+  writeFileSync(contractPath, JSON.stringify(contract));
+  const task = board.add(contract);
+  await assert.rejects(quiet(() => taskCli(["--cwd", cwd, "update", task.id, contractPath])), /No active orchestrator/);
+  const lock = join(board.directory, "dispatch.lock");
+  mkdirSync(lock, { recursive: true });
+  writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, heartbeat: Date.now() }));
+  await quiet(() => taskCli(["--cwd", cwd, "update", task.id, contractPath]));
+  assert.equal(board.get(task.id).revision, 2);
+});
+
 test("dragged screenshot paths become readable image attachments", (t) => {
   const { cwd } = fixture(t);
   const shot = join(cwd, "Screenshot 2026-09-12 at 8.43.16 pm.png");

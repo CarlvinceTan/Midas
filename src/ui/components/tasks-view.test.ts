@@ -19,6 +19,7 @@ function task(overrides: Partial<Task> = {}): Task {
     status: "new",
     merge: "not-merged",
     target: "main",
+    revision: 1,
     attempts: [],
     ...overrides,
   };

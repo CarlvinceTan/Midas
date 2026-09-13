@@ -24,10 +24,12 @@ export interface Attempt {
 }
 export interface Task extends Contract {
   id: string;
-  status: "new" | "running" | "completed" | "blocked";
+  status: "new" | "running" | "completed" | "blocked" | "paused" | "cancelled";
   merge: "not-merged" | "integrating" | "merged" | "failed";
   target: string;
   attempts: Attempt[];
+  /** Bumped on every contract edit so observers (e.g. running workers) notice. */
+  revision: number;
   detail?: string;
   mergedCommit?: string;
 }
@@ -182,8 +184,42 @@ export class TaskBoard {
       for (const id of c.dependencies ?? []) if (!board.tasks.some((t) => t.id === id)) throw new Error(`Unknown dependency: ${id}`);
       const task: Task = { title: c.title, instructions: c.instructions, checks: [...c.checks], group: c.group,
         dependencies: [...(c.dependencies ?? [])], id: `T${board.tasks.length + 1}`, status: "new", merge: "not-merged",
-        target: INTEGRATION_BRANCH, attempts: [] };
+        target: INTEGRATION_BRANCH, attempts: [], revision: 1 };
       board.tasks.push(task);
+      return task;
+    });
+  }
+  /**
+   * Edit an existing task's contract in place and bump its `revision`, so a
+   * running worker can re-read the board and adapt. Refuses merged/cancelled
+   * tasks (add a follow-up instead); blocked or completed-unmerged tasks are
+   * re-queued so the edited contract actually runs.
+   */
+  edit(id: string, patch: Partial<Pick<Contract, "title" | "group" | "instructions" | "checks" | "dependencies">>): Task {
+    if (!patch || typeof patch !== "object") throw new Error("Edit requires a patch object");
+    if (patch.title !== undefined && (typeof patch.title !== "string" || !patch.title.trim())) throw new Error("title must be a nonempty string");
+    if (patch.instructions !== undefined && (typeof patch.instructions !== "string" || !patch.instructions.trim())) throw new Error("instructions must be a nonempty string");
+    if (patch.checks !== undefined && (!Array.isArray(patch.checks) || !patch.checks.length || patch.checks.some((v) => typeof v !== "string" || !v.trim()))) throw new Error("checks must be a nonempty string[]");
+    if (patch.group !== undefined && typeof patch.group !== "string") throw new Error("group must be a string");
+    if (patch.dependencies !== undefined && (!Array.isArray(patch.dependencies) || patch.dependencies.some((v) => typeof v !== "string"))) throw new Error("dependencies must be a string[]");
+    return this.mutate((board) => {
+      const task = board.tasks.find((task) => task.id === id);
+      if (!task) throw new Error(`Unknown task: ${id}`);
+      if (task.merge === "merged") throw new Error(`Task ${id} is merged and cannot be edited; add a follow-up task instead`);
+      if (task.status === "cancelled") throw new Error(`Task ${id} is cancelled and cannot be edited; add a new task instead`);
+      for (const dep of patch.dependencies ?? []) {
+        if (dep === id) throw new Error("A task cannot depend on itself");
+        if (!board.tasks.some((t) => t.id === dep)) throw new Error(`Unknown dependency: ${dep}`);
+      }
+      if (patch.title !== undefined) task.title = patch.title;
+      if (patch.group !== undefined) task.group = patch.group;
+      if (patch.instructions !== undefined) task.instructions = patch.instructions;
+      if (patch.checks !== undefined) task.checks = [...patch.checks];
+      if (patch.dependencies !== undefined) task.dependencies = [...patch.dependencies];
+      task.revision = (task.revision ?? 0) + 1;
+      task.detail = "updated";
+      // A finished-but-unmerged or blocked task must re-run the edited contract.
+      if (task.status === "blocked" || task.status === "completed") { task.status = "new"; task.merge = "not-merged"; }
       return task;
     });
   }

@@ -11,10 +11,10 @@ export async function taskCli(args: string[]): Promise<void> {
     cwd = args[cwdIndex + 1]!;
     args.splice(cwdIndex, 2);
   }
-  const [command, value] = args;
+  const [command, value, extra] = args;
   if (!command || command === "--help") {
     process.stdout.write(
-      "midas task [--cwd DIR] add CONTRACT.json | list | run ID | merge ID | cleanup ID\n" +
+      "midas task [--cwd DIR] add CONTRACT.json | update ID CONTRACT.json | list | run ID | merge ID | cleanup ID\n" +
         "midas task [--cwd DIR] dispatch [--once] [--concurrency N]   run the board autonomously\n",
     );
     return;
@@ -43,8 +43,8 @@ export async function taskCli(args: string[]): Promise<void> {
     await dispatcher.drain();
     return;
   }
-  const arity = command === "list" ? 1 : 2;
-  if (!["add", "list", "run", "merge", "cleanup"].includes(command) || args.length !== arity) {
+  const arity = command === "list" ? 1 : command === "update" ? 3 : 2;
+  if (!["add", "update", "list", "run", "merge", "cleanup"].includes(command) || args.length !== arity) {
     throw new Error("Invalid task command; use midas task --help");
   }
   if (command === "add") {
@@ -52,6 +52,10 @@ export async function taskCli(args: string[]): Promise<void> {
     // could queue work that no dispatcher will ever run.
     if (!board.hasActiveDispatcher()) throw new Error("No active orchestrator: enable /multitask before adding tasks.");
     process.stdout.write(JSON.stringify(board.add(JSON.parse(readFileSync(value!, "utf8"))), null, 2) + "\n");
+  }
+  if (command === "update") {
+    if (!board.hasActiveDispatcher()) throw new Error("No active orchestrator: enable /multitask before updating tasks.");
+    process.stdout.write(JSON.stringify(board.edit(value!, JSON.parse(readFileSync(extra!, "utf8"))), null, 2) + "\n");
   }
   if (command === "list") process.stdout.write(JSON.stringify(board.read(), null, 2) + "\n");
   if (command === "run") await runTask(board, value!);
