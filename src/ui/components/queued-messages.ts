@@ -7,6 +7,10 @@ import {
 } from "@earendil-works/pi-tui";
 import { theme } from "../../theme/theme.ts";
 
+/** Atomic image chips, e.g. `[Image: screenshot.png]`, matching the editor. */
+const IMAGE_MARKER_REGEX = /\[Image: [^\]\n]*\]/g;
+const IMAGE_MARKER_COLOR = "\x1b[33m";
+
 /**
  * Queued follow-ups, anchored above the input box. The queue itself is owned by
  * the app; this reads it at render time so enqueue/dequeue only need a render.
@@ -36,12 +40,25 @@ export class QueuedMessages implements Component {
     const available = Math.max(1, width - pad * 2);
     const ellipsis = "…";
     // `truncateToWidth` resets styling right before the ellipsis, so truncate
-    // without one and append an explicitly dimmed ellipsis instead.
+    // without one and append an explicitly dimmed ellipsis instead. Image chips
+    // stay yellow even in the dim preview so they read as the same component.
+    const colorize = (text: string): string => {
+      let out = "";
+      let last = 0;
+      for (const match of text.matchAll(IMAGE_MARKER_REGEX)) {
+        const at = match.index ?? 0;
+        out += t.fg("dim", text.slice(last, at));
+        out += `${IMAGE_MARKER_COLOR}${match[0]}\x1b[39m`;
+        last = at + match[0].length;
+      }
+      return out + t.fg("dim", text.slice(last));
+    };
     const row = (text: string): string => {
-      if (visibleWidth(text) <= available) return prefix + t.fg("dim", text);
+      const colored = colorize(text);
+      if (visibleWidth(colored) <= available) return prefix + colored;
       const room = Math.max(0, available - visibleWidth(ellipsis));
-      const clipped = truncateToWidth(text, room, "");
-      return prefix + t.fg("dim", clipped) + t.fg("dim", ellipsis);
+      const clipped = truncateToWidth(colored, room, "");
+      return prefix + clipped + t.fg("dim", ellipsis);
     };
     const label = "Queue:";
     // No leading blank: the input dock already separates the queue from the

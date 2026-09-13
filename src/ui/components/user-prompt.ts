@@ -25,19 +25,14 @@ const IMAGE_MARKER_COLOR = "\x1b[33m";
  * background box), so midas keeps the bordered prompt styling.
  */
 export class UserPromptCard extends Container {
-  private readonly imageNames: Set<string>;
-
   constructor(
     private text: string,
     private outputPad: number,
     private borderColor: (content: string) => string,
-    imageFilenames: string[] = [],
     /** Multitask renders the prompt body in the tomato accent too. */
     private multitask = false,
   ) {
     super();
-    // Normalize exactly like the displayed text so macOS screenshot names match.
-    this.imageNames = new Set(imageFilenames.map((name) => name.replace(UNICODE_SPACE_REGEX, " ")));
     this.rebuild();
   }
 
@@ -45,10 +40,12 @@ export class UserPromptCard extends Container {
     this.clear();
     const contentBox = new Box(this.outputPad, 0);
     const promptText = this.text.replace(UNICODE_SPACE_REGEX, " ");
-    // Image chips are yellow in the editor; render them the same way here. Only
-    // markers for real attachments are styled — typed `[Image: …]` text stays
-    // plain. The chip is wrapped as inline code so markdown leaves it intact,
-    // then the code style paints it yellow and restores the prompt text colour.
+    // Every `[Image: …]` marker renders as the yellow chip in the TUI, wherever
+    // it came from (typed, pasted, re-edited queue, transcript copy). The real
+    // file is attached from the prompt's file parts when it is sent, so the
+    // agent still reads the actual image rather than this label. The chip is
+    // wrapped as inline code so markdown leaves it intact, then the code style
+    // paints it yellow and restores the prompt text colour.
     const promptTextColor = this.multitask ? "multitask" : "userMessageText";
     const markdownTheme = {
       ...getMarkdownTheme(),
@@ -56,10 +53,7 @@ export class UserPromptCard extends Container {
     };
     contentBox.addChild(
       new Markdown(
-        promptText.replace(IMAGE_MARKER_REGEX, (marker) => {
-          const name = marker.slice("[Image: ".length, -1);
-          return this.imageNames.has(name) ? `\`${marker}\`` : marker;
-        }),
+        promptText.replace(IMAGE_MARKER_REGEX, (marker) => `\`${marker}\``),
         0,
         0,
         markdownTheme,

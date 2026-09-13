@@ -115,7 +115,7 @@ export class RunView implements Component {
         .join("\n")
         .trim();
       if (text) {
-        const component = new UserPromptCard(text, pad, this.borderColor, prompt.imageFilenames ?? [], this.options.multitask === true);
+        const component = new UserPromptCard(text, pad, this.borderColor, this.options.multitask === true);
         lines.push(...component.render(width));
         promptRendered = true;
       }
