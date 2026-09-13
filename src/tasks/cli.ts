@@ -47,7 +47,12 @@ export async function taskCli(args: string[]): Promise<void> {
   if (!["add", "list", "run", "merge", "cleanup"].includes(command) || args.length !== arity) {
     throw new Error("Invalid task command; use midas task --help");
   }
-  if (command === "add") process.stdout.write(JSON.stringify(board.add(JSON.parse(readFileSync(value!, "utf8"))), null, 2) + "\n");
+  if (command === "add") {
+    // Only an active orchestrator may author tasks; otherwise a plain agent
+    // could queue work that no dispatcher will ever run.
+    if (!board.hasActiveDispatcher()) throw new Error("No active orchestrator: enable /multitask before adding tasks.");
+    process.stdout.write(JSON.stringify(board.add(JSON.parse(readFileSync(value!, "utf8"))), null, 2) + "\n");
+  }
   if (command === "list") process.stdout.write(JSON.stringify(board.read(), null, 2) + "\n");
   if (command === "run") await runTask(board, value!);
   if (command === "merge") await mergeTask(board, value!);

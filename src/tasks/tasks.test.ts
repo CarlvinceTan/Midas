@@ -8,6 +8,7 @@ import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { TaskBoard, git } from "./board.ts";
 import { runTask, mergeTask, cleanupTask } from "./runner.ts";
 import { TaskDispatcher } from "./dispatcher.ts";
+import { taskCli } from "./cli.ts";
 import { pathToFileURL } from "node:url";
 import { eventSessionId } from "../opencode/session.ts";
 import { findImagePaths, readImageAttachment } from "../lib/attachments.ts";
@@ -250,6 +251,56 @@ test("dispatcher lease elects one leader and recovers a stale one", (t) => {
   writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: 1, heartbeat: 0 }));
   const recovered = board.lease("dispatch", 30);
   recovered();
+});
+
+/** Silences CLI stdout while a test exercises the authoring boundary. */
+async function quiet<T>(fn: () => Promise<T>): Promise<T> {
+  const original = process.stdout.write;
+  process.stdout.write = (() => true) as typeof process.stdout.write;
+  try { return await fn(); } finally { process.stdout.write = original; }
+}
+
+test("task authoring requires a live dispatcher lease", async (t) => {
+  const { cwd, board } = fixture(t);
+  const contractPath = join(cwd, "contract.json");
+  writeFileSync(contractPath, JSON.stringify(contract));
+  const lock = join(board.directory, "dispatch.lock");
+  const owner = join(lock, "owner.json");
+
+  // A missing lock is inactive.
+  assert.equal(board.hasActiveDispatcher(), false);
+  await assert.rejects(quiet(() => taskCli(["--cwd", cwd, "add", contractPath])), /No active orchestrator/);
+
+  // A stale heartbeat is inactive.
+  mkdirSync(lock, { recursive: true });
+  writeFileSync(owner, JSON.stringify({ pid: 1, heartbeat: Date.now() - 60_000 }));
+  assert.equal(board.hasActiveDispatcher(), false);
+  await assert.rejects(quiet(() => taskCli(["--cwd", cwd, "add", contractPath])), /No active orchestrator/);
+
+  // A malformed owner.json is inactive.
+  writeFileSync(owner, "not json");
+  assert.equal(board.hasActiveDispatcher(), false);
+  await assert.rejects(quiet(() => taskCli(["--cwd", cwd, "add", contractPath])), /No active orchestrator/);
+  writeFileSync(owner, JSON.stringify({ heartbeat: "soon" }));
+  assert.equal(board.hasActiveDispatcher(), false);
+
+  // A fresh heartbeat allows authoring; read-only commands are unaffected.
+  writeFileSync(owner, JSON.stringify({ pid: process.pid, heartbeat: Date.now() }));
+  assert.equal(board.hasActiveDispatcher(), true);
+  await quiet(async () => {
+    await taskCli(["--cwd", cwd, "list"]);
+    await taskCli(["--cwd", cwd, "--help"]);
+    await taskCli(["--cwd", cwd, "add", contractPath]);
+  });
+  assert.equal(board.read().tasks.length, 1);
+});
+
+test("TaskBoard.add is unaffected by the authoring gate (internal path)", (t) => {
+  const { board } = fixture(t);
+  // No dispatch lease exists, yet the board's own mutator is unchanged.
+  const task = board.add(contract);
+  assert.equal(task.title, contract.title);
+  assert.equal(board.read().tasks.length, 1);
 });
 
 test("dragged screenshot paths become readable image attachments", (t) => {

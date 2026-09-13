@@ -82,6 +82,21 @@ export class TaskBoard {
     return () => rmSync(path, { recursive: true });
   }
   /**
+   * True only while a dispatcher holds a live lease. Authoring new board tasks
+   * is gated on this so a plain agent cannot queue work no orchestrator will
+   * pick up. A missing, unreadable, malformed, or stale heartbeat is inactive.
+   */
+  hasActiveDispatcher(ttlMs = 15_000): boolean {
+    try {
+      const owner = JSON.parse(readFileSync(join(this.directory, "dispatch.lock", "owner.json"), "utf8")) as { heartbeat?: unknown };
+      const heartbeat = owner?.heartbeat;
+      return typeof heartbeat === "number" && Number.isFinite(heartbeat) && Date.now() - heartbeat < ttlMs;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Dispatcher lease. Unlike the fail-closed operation locks, a stale lease is
    * taken over once its heartbeat expires, so a crashed dispatcher recovers.
    * Task-level locks stay fail-closed; this only elects a leader.
