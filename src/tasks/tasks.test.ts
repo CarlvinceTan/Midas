@@ -148,7 +148,7 @@ test("merge conflict preserves result and never advances target", async (t) => {
   await assert.rejects(cleanupTask(board, b.id), /Only merged/);
 });
 
-test("merge defers when the target branch is not checked out; dirty cleanup is refused", async (t) => {
+test("merge defers when the target branch is not checked out; merged cleanup force-removes", async (t) => {
   const { cwd, board } = fixture(t);
   const task = board.add(contract);
   await runTask(board, task.id, async (_, attempt) => writeFileSync(join(attempt.worktree, "result.txt"), "done"));
@@ -158,8 +158,12 @@ test("merge defers when the target branch is not checked out; dirty cleanup is r
   git(cwd, "checkout", "main");
   await mergeTask(board, task.id);
   assert.equal(board.get(task.id).merge, "merged");
-  writeFileSync(join(board.get(task.id).attempts[0]!.worktree, "local.txt"), "keep");
-  await assert.rejects(cleanupTask(board, task.id), /local or ignored/);
+  const worktree = board.get(task.id).attempts[0]!.worktree;
+  // Ignored/local artifacts must not leave a merged task's worktree lingering.
+  writeFileSync(join(worktree, "local.txt"), "keep");
+  await cleanupTask(board, task.id);
+  assert.equal(board.get(task.id).attempts[0]!.cleaned, true);
+  assert.equal(existsSync(worktree), false);
 });
 
 test("board rejects invalid contracts, unknown dependencies, corrupt data and concurrent writers", (t) => {

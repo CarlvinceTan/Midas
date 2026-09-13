@@ -227,9 +227,10 @@ export async function cleanupTask(board: TaskBoard, id: string): Promise<void> {
     if (task.merge !== "merged") throw new Error("Only merged task worktrees can be cleaned automatically");
     const attempt = task.attempts.at(-1)!;
     if (attempt.cleaned) return;
-    if (await gitAsync(attempt.worktree, "status", "--porcelain", "--ignored")) throw new Error("Worktree has local or ignored files; inspect before cleanup");
     if (await gitAsync(attempt.worktree, "rev-parse", "HEAD") !== attempt.result) throw new Error("Worktree HEAD changed after validation");
-    await gitAsync(board.cwd, "worktree", "remove", attempt.worktree);
+    // The task is merged, so its worktree is disposable: force removal so ignored
+    // artifacts (node_modules, build output) do not leave it lingering forever.
+    await gitAsync(board.cwd, "worktree", "remove", "--force", attempt.worktree);
     board.update(id, (t) => { t.attempts.at(-1)!.cleaned = true; });
   } finally { unlock(); }
 }
