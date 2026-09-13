@@ -226,6 +226,74 @@ test("dispatcher merges completed work onto the checked-out branch", async (t) =
   assert.equal(board.get(task.id).merge, "merged");
 });
 
+test("pause aborts a running worker and can be resumed", async (t) => {
+  const { board } = fixture(t);
+  const task = board.add(contract);
+  let startedResolve!: () => void;
+  const started = new Promise<void>((resolve) => { startedResolve = resolve; });
+  const dispatcher = new TaskDispatcher(board, {
+    lease: false, intervalMs: 10, concurrency: 1,
+    worker: async (_task, _attempt, _session, signal) => {
+      startedResolve();
+      await new Promise<void>((_resolve, reject) => {
+        if (signal?.aborted) reject(new Error("aborted"));
+        else signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    },
+  });
+  await dispatcher.tick();
+  await started;
+  board.pause(task.id);
+  await dispatcher.tick();
+  await dispatcher.drain();
+  dispatcher.stop();
+  assert.equal(board.get(task.id).status, "paused");
+  assert.equal(board.get(task.id).requestedAction, undefined);
+  board.resume(task.id);
+  assert.equal(board.get(task.id).status, "new");
+  assert.equal(board.get(task.id).merge, "not-merged");
+});
+
+test("cancel aborts a running worker and marks it cancelled", async (t) => {
+  const { board } = fixture(t);
+  const task = board.add(contract);
+  let startedResolve!: () => void;
+  const started = new Promise<void>((resolve) => { startedResolve = resolve; });
+  const dispatcher = new TaskDispatcher(board, {
+    lease: false, intervalMs: 10, concurrency: 1,
+    worker: async (_task, _attempt, _session, signal) => {
+      startedResolve();
+      await new Promise<void>((_resolve, reject) => {
+        if (signal?.aborted) reject(new Error("aborted"));
+        else signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    },
+  });
+  await dispatcher.tick();
+  await started;
+  board.cancel(task.id);
+  await dispatcher.tick();
+  await dispatcher.drain();
+  dispatcher.stop();
+  assert.equal(board.get(task.id).status, "cancelled");
+  assert.equal(board.get(task.id).requestedAction, undefined);
+});
+
+test("pause/resume/cancel validate task state", (t) => {
+  const { board } = fixture(t);
+  const task = board.add(contract);
+  board.pause(task.id);
+  assert.equal(board.get(task.id).status, "paused");
+  board.resume(task.id);
+  assert.equal(board.get(task.id).status, "new");
+  board.cancel(task.id);
+  assert.equal(board.get(task.id).status, "cancelled");
+  assert.throws(() => board.pause(task.id), /cannot be paused/);
+  assert.throws(() => board.resume(task.id), /not paused or blocked/);
+  board.update(task.id, (t) => { t.merge = "merged"; });
+  assert.throws(() => board.cancel(task.id), /already merged/);
+});
+
 test("dispatcher marks interrupted runs blocked instead of double-running", async (t) => {
   const { cwd, board } = fixture(t);
   const task = board.add(contract);

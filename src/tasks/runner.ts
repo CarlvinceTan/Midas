@@ -17,11 +17,15 @@ async function checks(task: Task, cwd: string): Promise<void> {
   }
 }
 
-export type Worker = (task: Task, attempt: Attempt, onSession: (id: string) => void) => Promise<void>;
-const worker: Worker = async (task, attempt, onSession) => {
+export type Worker = (task: Task, attempt: Attempt, onSession: (id: string) => void, signal?: AbortSignal) => Promise<void>;
+const worker: Worker = async (task, attempt, onSession, signal) => {
   const server = await startServer({ cwd: attempt.worktree, configFile: midasConfigFile(attempt.worktree) });
   let session: Session | undefined;
   const abort = new AbortController();
+  if (signal) {
+    if (signal.aborted) abort.abort(signal.reason);
+    else signal.addEventListener("abort", () => abort.abort(signal.reason), { once: true });
+  }
   const timeout = setTimeout(() => abort.abort(new Error("Worker exceeded 60 minutes")), 60 * 60_000);
   try {
     session = await server.client.session.create({ query: { directory: attempt.worktree }, body: { title: `${task.id}: ${task.title}` } }) as unknown as Session;
@@ -54,7 +58,7 @@ const worker: Worker = async (task, attempt, onSession) => {
   }
 };
 
-export async function runTask(board: TaskBoard, id: string, execute: Worker = worker): Promise<void> {
+export async function runTask(board: TaskBoard, id: string, execute: Worker = worker, signal?: AbortSignal): Promise<void> {
   board.get(id);
   const unlock = board.lock(`task-${id}`);
   const previousAttempts = board.get(id).attempts.length;
@@ -62,7 +66,7 @@ export async function runTask(board: TaskBoard, id: string, execute: Worker = wo
     const attempt = await board.prepare(id);
     const task = board.get(id);
     board.update(id, (t) => { t.detail = "Worker running"; });
-    await execute(task, attempt, (session) => board.update(id, (t) => { t.attempts.at(-1)!.session = session; }));
+    await execute(task, attempt, (session) => board.update(id, (t) => { t.attempts.at(-1)!.session = session; }), signal);
     await assertHead(attempt);
     board.update(id, (t) => { t.detail = "Validating"; });
     const tree = await snapshot(attempt.worktree);
@@ -80,7 +84,17 @@ export async function runTask(board: TaskBoard, id: string, execute: Worker = wo
       Object.assign(t.attempts.at(-1)!, { result, checkedTree: tree, checkedAt: new Date().toISOString() });
     });
   } catch (error) {
-    if (board.get(id).attempts.length > previousAttempts) board.update(id, (t) => { t.status = "blocked"; t.detail = String(error); });
+    const current = board.get(id);
+    // A pause/cancel request is not a failure: record the intended state.
+    if (current.requestedAction === "pause") {
+      board.update(id, (t) => { t.status = "paused"; t.requestedAction = undefined; t.detail = "Paused"; });
+      return;
+    }
+    if (current.requestedAction === "cancel") {
+      board.update(id, (t) => { t.status = "cancelled"; t.requestedAction = undefined; t.detail = "Cancelled"; });
+      return;
+    }
+    if (current.attempts.length > previousAttempts) board.update(id, (t) => { t.status = "blocked"; t.detail = String(error); });
     throw error;
   } finally { unlock(); }
 }

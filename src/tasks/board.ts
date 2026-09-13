@@ -30,6 +30,8 @@ export interface Task extends Contract {
   attempts: Attempt[];
   /** Bumped on every contract edit so observers (e.g. running workers) notice. */
   revision: number;
+  /** Set on a running task to ask the dispatcher to pause/cancel its worker. */
+  requestedAction?: "pause" | "cancel";
   detail?: string;
   mergedCommit?: string;
 }
@@ -229,6 +231,41 @@ export class TaskBoard {
       task.detail = "updated";
       // A finished-but-unmerged or blocked task must re-run the edited contract.
       if (task.status === "blocked" || task.status === "completed") { task.status = "new"; task.merge = "not-merged"; }
+      return task;
+    });
+  }
+  /** Ask a running task to pause; an idle pending task pauses immediately. */
+  pause(id: string): Task {
+    return this.mutate((board) => {
+      const task = board.tasks.find((task) => task.id === id);
+      if (!task) throw new Error(`Unknown task: ${id}`);
+      if (task.status === "cancelled" || task.status === "completed" || task.merge === "merged") throw new Error(`Task ${id} cannot be paused`);
+      if (task.status === "running") { task.requestedAction = "pause"; task.detail = "Pause requested"; }
+      else { task.status = "paused"; task.detail = "Paused"; }
+      return task;
+    });
+  }
+  /** Re-queue a paused or blocked task so the (possibly edited) contract runs. */
+  resume(id: string): Task {
+    return this.mutate((board) => {
+      const task = board.tasks.find((task) => task.id === id);
+      if (!task) throw new Error(`Unknown task: ${id}`);
+      if (task.status !== "paused" && task.status !== "blocked") throw new Error(`Task ${id} is not paused or blocked`);
+      task.requestedAction = undefined;
+      task.status = "new";
+      task.merge = "not-merged";
+      task.detail = "Queued to resume";
+      return task;
+    });
+  }
+  /** Ask a running task to cancel; an idle pending task cancels immediately. */
+  cancel(id: string): Task {
+    return this.mutate((board) => {
+      const task = board.tasks.find((task) => task.id === id);
+      if (!task) throw new Error(`Unknown task: ${id}`);
+      if (task.merge === "merged") throw new Error(`Task ${id} is already merged`);
+      if (task.status === "running") { task.requestedAction = "cancel"; task.detail = "Cancel requested"; }
+      else { task.status = "cancelled"; task.detail = "Cancelled"; }
       return task;
     });
   }

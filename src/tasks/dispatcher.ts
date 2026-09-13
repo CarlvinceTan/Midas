@@ -25,6 +25,7 @@ export interface DispatcherOptions {
  */
 export class TaskDispatcher {
   private active = new Map<string, Promise<void>>();
+  private controllers = new Map<string, AbortController>();
   private timer?: ReturnType<typeof setInterval>;
   private release?: () => void;
   private ticking?: Promise<void>;
@@ -70,6 +71,7 @@ export class TaskDispatcher {
       try {
         this.reconcile();
         await this.integrate();
+        this.requestControls();
         this.dispatchReady();
       } finally {
         this.ticking = undefined;
@@ -121,14 +123,28 @@ export class TaskDispatcher {
       if (task.status !== "new" || this.active.has(task.id)) continue;
       if (!this.ready(task, merged)) continue;
       this.options.onEvent?.(`${task.id}: started`);
-      const promise = runTask(this.board, task.id, this.options.worker)
+      const controller = new AbortController();
+      this.controllers.set(task.id, controller);
+      const promise = runTask(this.board, task.id, this.options.worker, controller.signal)
         .then(() => this.options.onEvent?.(`${task.id}: completed`))
         .catch((error) => this.options.onEvent?.(`${task.id}: ${error instanceof Error ? error.message : String(error)}`))
         .finally(() => {
           this.active.delete(task.id);
+          this.controllers.delete(task.id);
           void this.tick();
         });
       this.active.set(task.id, promise);
+    }
+  }
+
+  /** Abort a running worker when its task was asked to pause or cancel. */
+  private requestControls(): void {
+    for (const [id, controller] of this.controllers) {
+      const task = this.board.get(id);
+      if (task.requestedAction && !controller.signal.aborted) {
+        controller.abort(new Error(`Task ${id} ${task.requestedAction} requested`));
+        this.options.onEvent?.(`${id}: ${task.requestedAction} requested`);
+      }
     }
   }
 
