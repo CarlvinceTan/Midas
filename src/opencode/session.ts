@@ -1,5 +1,6 @@
 import type { Event, OpencodeClient, Part, Permission, Session } from "@opencode-ai/sdk";
-import { Transcript, type QuestionView } from "../state/transcript.ts";
+import type { OpencodeClient as OpencodeV2Client } from "@opencode-ai/sdk/v2";
+import { Transcript, type QuestionView, type SessionPhase } from "../state/transcript.ts";
 import type { PromptAttachment } from "../lib/attachments.ts";
 import { BOARD_WORKER_AGENT, DEFAULT_INTERACTIVE_AGENT, ORCHESTRATOR_AGENT, type AgentPermissionRule } from "../lib/agents.ts";
 
@@ -89,7 +90,37 @@ export function addUsage(a: UsageTotals, b: UsageTotals): UsageTotals {
 
 export interface SessionControllerOptions {
   client: OpencodeClient;
+  /**
+   * v2 API client, used to admit steered follow-ups through opencode's durable
+   * `session_input` queue. Optional so older servers (or tests) keep working
+   * through the v1 path.
+   */
+  clientV2?: OpencodeV2Client;
   cwd: string;
+}
+
+/**
+ * A prompt submitted while the session is busy is a steer: opencode should
+ * admit it into the running turn at its next step boundary. An idle session
+ * starts a fresh turn instead.
+ */
+export function shouldSteer(phase: SessionPhase): boolean {
+  return phase !== "idle";
+}
+
+/** The v2 `session.prompt` payload for a steer, with attachments remapped. */
+export interface SteerPrompt {
+  prompt: { text: string; files?: Array<{ uri: string; name: string }> };
+  delivery: "steer";
+}
+
+/**
+ * Map a Midas prompt onto the v2 `session.prompt` body. v1 file parts carry
+ * `{ url, filename }`; the v2 queue expects `{ uri, name }` (a data URL works).
+ */
+export function steerPrompt(text: string, attachments: readonly PromptAttachment[] = []): SteerPrompt {
+  const files = attachments.map((file) => ({ uri: file.url, name: file.filename }));
+  return { prompt: { text, ...(files.length > 0 ? { files } : {}) }, delivery: "steer" };
 }
 
 /** SDK events use both top-level and nested session identities. */
@@ -105,6 +136,7 @@ export function eventSessionId(event: Event): string | undefined {
 export class SessionController {
   readonly transcript = new Transcript();
   private client: OpencodeClient;
+  private clientV2: OpencodeV2Client | undefined;
   private cwd: string;
   private sessionId: string | undefined;
   private sessionTitle: string | undefined;
@@ -118,6 +150,7 @@ export class SessionController {
 
   constructor(options: SessionControllerOptions) {
     this.client = options.client;
+    this.clientV2 = options.clientV2;
     this.cwd = options.cwd;
   }
 
@@ -367,7 +400,14 @@ export class SessionController {
 
   async prompt(text: string, attachments: PromptAttachment[] = []): Promise<void> {
     if (!this.sessionId) throw new Error("No active session");
+    // Decide the delivery from the phase as it was *before* we mark the session
+    // busy, so a steer is not mistaken for the fresh turn we start right after.
+    const wasBusy = shouldSteer(this.transcript.phase);
     this.transcript.setPhase("busy");
+    if (wasBusy && (await this.steer(text, attachments))) return;
+    // A steer needs opencode's v2 endpoint (1.18.30+). If the v2 client is
+    // absent or the route is unreachable, fall through to the v1 path so the
+    // prompt still lands instead of being dropped.
     await this.client.session.promptAsync({
       path: { id: this.sessionId },
       query: { directory: this.cwd },
@@ -380,6 +420,29 @@ export class SessionController {
         ...(this.agent ? { agent: this.agent } : {}),
       },
     });
+  }
+
+  /**
+   * Admit a prompt as a "steer" input via the v2 API, so a running agent picks
+   * it up at its next step boundary rather than after the whole loop.
+   *
+   * Returns whether the steer was admitted. Never throws: a missing client,
+   * an unreachable v2 route, or any other failure returns false so the caller
+   * can fall back to the v1 prompt path.
+   */
+  private async steer(text: string, attachments: PromptAttachment[]): Promise<boolean> {
+    const sessionId = this.sessionId;
+    const clientV2 = this.clientV2;
+    if (!sessionId || !clientV2) return false;
+    try {
+      // With `responseStyle: "data"` a successful admission resolves to the
+      // admission record; a rejected request (e.g. a server without the v2
+      // route) resolves to `undefined`. Only a real admission is trusted.
+      const admitted = await clientV2.v2.session.prompt({ sessionID: sessionId, ...steerPrompt(text, attachments) });
+      return admitted !== undefined;
+    } catch {
+      return false;
+    }
   }
 
   /**
