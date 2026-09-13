@@ -42,23 +42,58 @@ test("worktree lifecycle merges into the checked-out branch", async (t) => {
     assert.equal(readFileSync(join(attempt.worktree, "base.txt"), "utf8"), "original\n");
     session("worker-session");
     writeFileSync(join(attempt.worktree, "result.txt"), "done\n");
+    writeFileSync(join(attempt.worktree, "base.txt"), "task edits\n");
   });
   assert.equal(board.get(task.id).status, "completed");
   assert.equal(board.get(task.id).merge, "not-merged");
   assert.ok(board.get(task.id).attempts[0]!.checkedTree);
-  // A dirty checkout defers the merge instead of clobbering the user's edits.
+  // A dirty file the merge would overwrite defers it with a reason; the user's edit survives.
   writeFileSync(join(cwd, "base.txt"), "user edits\n");
   await mergeTask(board, task.id);
   assert.equal(board.get(task.id).merge, "not-merged");
+  assert.match(board.get(task.id).mergeBlocked ?? "", /base\.txt/);
   assert.equal(readFileSync(join(cwd, "base.txt"), "utf8"), "user edits\n");
   // Once clean, the task merges straight onto the checked-out branch.
   git(cwd, "checkout", "--", "base.txt");
   await mergeTask(board, task.id);
   assert.equal(board.get(task.id).merge, "merged");
+  assert.equal(board.get(task.id).mergeBlocked, undefined);
+  assert.equal(readFileSync(join(cwd, "base.txt"), "utf8"), "task edits\n");
   assert.equal(readFileSync(join(cwd, "result.txt"), "utf8"), "done\n");
   await cleanupTask(board, task.id);
   assert.equal(board.get(task.id).attempts[0]!.cleaned, true);
   assert.equal(board.read().tasks.length, 1);
+});
+
+test("an unrelated dirty file does not block the merge and survives it byte-identical", async (t) => {
+  const { cwd, board } = fixture(t);
+  const task = board.add(contract);
+  await runTask(board, task.id, async (_, attempt) => writeFileSync(join(attempt.worktree, "result.txt"), "done\n"));
+  // base.txt is untouched by the task, so editing it must not defer the merge.
+  writeFileSync(join(cwd, "base.txt"), "user edits\n");
+  writeFileSync(join(cwd, "notes.txt"), "scratch\n");
+  await mergeTask(board, task.id);
+  assert.equal(board.get(task.id).merge, "merged");
+  assert.equal(board.get(task.id).mergeBlocked, undefined);
+  assert.equal(readFileSync(join(cwd, "base.txt"), "utf8"), "user edits\n");
+  assert.equal(readFileSync(join(cwd, "notes.txt"), "utf8"), "scratch\n");
+  assert.equal(readFileSync(join(cwd, "result.txt"), "utf8"), "done\n");
+});
+
+test("a post-merge check failure restores the branch without disturbing unrelated WIP", async (t) => {
+  const { cwd, board } = fixture(t);
+  const task = board.add({ ...contract, checks: ["test -f result.txt", "test ! -f blocker.txt"] });
+  await runTask(board, task.id, async (_, attempt) => writeFileSync(join(attempt.worktree, "result.txt"), "done\n"));
+  const base = git(cwd, "rev-parse", "HEAD");
+  // Unrelated work-in-progress keeps the merge eligible but fails the check.
+  writeFileSync(join(cwd, "base.txt"), "user edits\n");
+  writeFileSync(join(cwd, "blocker.txt"), "keep\n");
+  await assert.rejects(mergeTask(board, task.id), /Check failed/);
+  assert.equal(git(cwd, "rev-parse", "HEAD"), base);
+  assert.equal(board.get(task.id).merge, "failed");
+  assert.equal(readFileSync(join(cwd, "base.txt"), "utf8"), "user edits\n");
+  assert.equal(readFileSync(join(cwd, "blocker.txt"), "utf8"), "keep\n");
+  assert.equal(existsSync(join(cwd, "result.txt")), false);
 });
 
 test("claims prevent duplicate workers; dependencies wait for merge", async (t) => {
@@ -167,9 +202,11 @@ test("merge defers when the target branch is not checked out; merged cleanup for
   git(cwd, "checkout", "-b", "other");
   await mergeTask(board, task.id);
   assert.equal(board.get(task.id).merge, "not-merged");
+  assert.match(board.get(task.id).mergeBlocked ?? "", /target main is not checked out/);
   git(cwd, "checkout", "main");
   await mergeTask(board, task.id);
   assert.equal(board.get(task.id).merge, "merged");
+  assert.equal(board.get(task.id).mergeBlocked, undefined);
   const worktree = board.get(task.id).attempts[0]!.worktree;
   // Ignored/local artifacts must not leave a merged task's worktree lingering.
   writeFileSync(join(worktree, "local.txt"), "keep");
