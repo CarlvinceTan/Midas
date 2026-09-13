@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { availableParallelism, cpus } from "node:os";
 import { join } from "node:path";
-import { TaskBoard, type Task } from "./board.ts";
+import { TaskBoard, scopesOverlap, type Task } from "./board.ts";
 import { runTask, mergeTask, cleanupTask, type Worker } from "./runner.ts";
 
 /**
@@ -127,10 +127,30 @@ export class TaskDispatcher {
     const limit = Math.max(1, this.options.concurrency ?? defaultTaskConcurrency());
     const snapshot = this.board.read();
     const merged = (id: string): boolean => snapshot.tasks.find((t) => t.id === id)?.merge === "merged";
+    const laneOf = (task: Task): string => task.group || `#${task.id}`;
+    // Lanes are the unit of parallelism: one active task per group, distinct
+    // groups run together. An ungrouped task is its own lane.
+    const activeLanes = new Set<string>();
+    for (const id of this.active.keys()) {
+      const active = snapshot.tasks.find((t) => t.id === id);
+      if (active) activeLanes.add(laneOf(active));
+    }
     for (const task of snapshot.tasks) {
       if (this.active.size >= limit) break;
       if (task.status !== "new" || this.active.has(task.id)) continue;
       if (!this.ready(task, merged)) continue;
+      const lane = laneOf(task);
+      if (activeLanes.has(lane)) continue;
+      // Cross-lane file overlap is a warning only; lane assignment is the
+      // orchestrator's job and the merge remains the final guard.
+      for (const id of this.active.keys()) {
+        const other = snapshot.tasks.find((t) => t.id === id);
+        if (other && scopesOverlap(task.scope ?? [], other.scope ?? [])) {
+          this.options.onEvent?.(`${task.id}: scope overlaps active ${id}; lanes may conflict`);
+          break;
+        }
+      }
+      activeLanes.add(lane);
       this.options.onEvent?.(`${task.id}: started`);
       const controller = new AbortController();
       this.controllers.set(task.id, controller);

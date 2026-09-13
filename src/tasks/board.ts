@@ -10,6 +10,8 @@ export interface Contract {
   instructions: string;
   checks: string[];
   dependencies?: string[];
+  /** Repo-relative paths/globs this task may change (parallel-safety hint). */
+  scope?: string[];
 }
 export interface Attempt {
   id: string;
@@ -36,6 +38,34 @@ export interface Task extends Contract {
   mergedCommit?: string;
 }
 export interface Board { version: 1; tasks: Task[] }
+
+/** Convert a simple `*` glob to an anchored regexp. */
+function scopeGlob(pattern: string): RegExp {
+  return new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`);
+}
+
+/**
+ * True when two declared scopes could touch the same files. Exact paths match;
+ * a trailing `/` covers descendants; `*` globs are honoured; a missing/empty
+ * scope is treated as `["*"]` (overlaps everything) so correctness wins until a
+ * task declares the files it may change.
+ */
+export function scopesOverlap(a: string[], b: string[]): boolean {
+  const norm = (scope: string[]): string[] => scope.length ? scope : ["*"];
+  for (const x of norm(a)) {
+    for (const y of norm(b)) {
+      if (x === "*" || y === "*" || x === y) return true;
+      if (x.endsWith("/") && y.startsWith(x)) return true;
+      if (y.endsWith("/") && x.startsWith(y)) return true;
+      if ((x.includes("*") && scopeGlob(x).test(y)) || (y.includes("*") && scopeGlob(y).test(x))) return true;
+    }
+  }
+  return false;
+}
+
+function validScope(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((v) => typeof v === "string" && v.trim() && !v.startsWith("/") && !v.includes(".."));
+}
 
 /**
  * Blocking git. Reserved for one-time setup (resolving the board directory) and
@@ -187,15 +217,16 @@ export class TaskBoard {
     if (!c || typeof c.title !== "string" || !c.title.trim() || typeof c.instructions !== "string" || !c.instructions.trim()
       || !Array.isArray(c.checks) || !c.checks.length || c.checks.some((v) => typeof v !== "string" || !v.trim())
       || (c.group !== undefined && typeof c.group !== "string")
+      || (c.scope !== undefined && !validScope(c.scope))
       || (c.dependencies !== undefined && (!Array.isArray(c.dependencies) || c.dependencies.some((v) => typeof v !== "string")))) {
-      throw new Error("Contract requires title, instructions, nonempty checks[], and optional group/dependencies[]");
+      throw new Error("Contract requires title, instructions, nonempty checks[], and optional group/dependencies[]/scope[]");
     }
     const target = this.currentBranch();
     return this.mutate((board) => {
       for (const id of c.dependencies ?? []) if (!board.tasks.some((t) => t.id === id)) throw new Error(`Unknown dependency: ${id}`);
       const task: Task = { title: c.title, instructions: c.instructions, checks: [...c.checks], group: c.group,
-        dependencies: [...(c.dependencies ?? [])], id: `T${board.tasks.length + 1}`, status: "new", merge: "not-merged",
-        target, attempts: [], revision: 1 };
+        dependencies: [...(c.dependencies ?? [])], scope: c.scope ? [...c.scope] : undefined, id: `T${board.tasks.length + 1}`,
+        status: "new", merge: "not-merged", target, attempts: [], revision: 1 };
       board.tasks.push(task);
       return task;
     });
@@ -206,12 +237,13 @@ export class TaskBoard {
    * tasks (add a follow-up instead); blocked or completed-unmerged tasks are
    * re-queued so the edited contract actually runs.
    */
-  edit(id: string, patch: Partial<Pick<Contract, "title" | "group" | "instructions" | "checks" | "dependencies">>): Task {
+  edit(id: string, patch: Partial<Pick<Contract, "title" | "group" | "instructions" | "checks" | "dependencies" | "scope">>): Task {
     if (!patch || typeof patch !== "object") throw new Error("Edit requires a patch object");
     if (patch.title !== undefined && (typeof patch.title !== "string" || !patch.title.trim())) throw new Error("title must be a nonempty string");
     if (patch.instructions !== undefined && (typeof patch.instructions !== "string" || !patch.instructions.trim())) throw new Error("instructions must be a nonempty string");
     if (patch.checks !== undefined && (!Array.isArray(patch.checks) || !patch.checks.length || patch.checks.some((v) => typeof v !== "string" || !v.trim()))) throw new Error("checks must be a nonempty string[]");
     if (patch.group !== undefined && typeof patch.group !== "string") throw new Error("group must be a string");
+    if (patch.scope !== undefined && !validScope(patch.scope)) throw new Error("scope must be an array of repo-relative paths");
     if (patch.dependencies !== undefined && (!Array.isArray(patch.dependencies) || patch.dependencies.some((v) => typeof v !== "string"))) throw new Error("dependencies must be a string[]");
     return this.mutate((board) => {
       const task = board.tasks.find((task) => task.id === id);
@@ -226,6 +258,7 @@ export class TaskBoard {
       if (patch.group !== undefined) task.group = patch.group;
       if (patch.instructions !== undefined) task.instructions = patch.instructions;
       if (patch.checks !== undefined) task.checks = [...patch.checks];
+      if (patch.scope !== undefined) task.scope = [...patch.scope];
       if (patch.dependencies !== undefined) task.dependencies = [...patch.dependencies];
       task.revision = (task.revision ?? 0) + 1;
       task.detail = "updated";

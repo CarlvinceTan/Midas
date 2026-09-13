@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Event } from "@opencode-ai/sdk";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
-import { TaskBoard, git } from "./board.ts";
+import { TaskBoard, git, scopesOverlap } from "./board.ts";
 import { runTask, mergeTask, cleanupTask } from "./runner.ts";
 import { TaskDispatcher, defaultTaskConcurrency } from "./dispatcher.ts";
 import { taskCli } from "./cli.ts";
@@ -181,10 +181,10 @@ test("dispatcher autonomously runs, merges, cleans up and unblocks dependents", 
 
 test("dispatcher respects concurrency and waits for dependency merges", async (t) => {
   const { board } = fixture(t);
-  const parallel = { title: "Parallel work", group: "P", instructions: "Write a unique file", checks: ["true"] };
-  const a = board.add(parallel);
-  const b = board.add(parallel);
-  const dependent = board.add({ ...parallel, dependencies: [a.id] });
+  const make = (group: string) => ({ title: "Parallel work", group, instructions: "Write a unique file", checks: ["true"] });
+  const a = board.add(make("A"));
+  const b = board.add(make("B"));
+  const dependent = board.add({ ...make("A"), dependencies: [a.id] });
   let live = 0;
   let peak = 0;
   const dispatcher = new TaskDispatcher(board, {
@@ -292,6 +292,46 @@ test("pause/resume/cancel validate task state", (t) => {
   assert.throws(() => board.resume(task.id), /not paused or blocked/);
   board.update(task.id, (t) => { t.merge = "merged"; });
   assert.throws(() => board.cancel(task.id), /already merged/);
+});
+
+test("scopesOverlap matches exact paths, directories and globs; empty means wildcard", () => {
+  assert.equal(scopesOverlap(["src/a.ts"], ["src/a.ts"]), true);
+  assert.equal(scopesOverlap(["src/a.ts"], ["src/b.ts"]), false);
+  assert.equal(scopesOverlap(["src/voice/"], ["src/voice/tts.ts"]), true);
+  assert.equal(scopesOverlap(["src/*.ts"], ["src/app.ts"]), true);
+  assert.equal(scopesOverlap([], ["src/a.ts"]), true);
+  assert.equal(scopesOverlap(["src/a.ts"], []), true);
+});
+
+test("dispatcher runs one task per lane and different lanes in parallel", async (t) => {
+  const { board } = fixture(t);
+  const mk = (group: string): ReturnType<typeof board.add> => board.add({ title: group, group, instructions: "x", checks: ["true"], scope: [`${group}/`] });
+  mk("alpha");
+  mk("alpha");
+  mk("beta");
+  let live = 0;
+  let peak = 0;
+  const worker = async (): Promise<void> => { live += 1; peak = Math.max(peak, live); await new Promise((resolve) => setTimeout(resolve, 120)); live -= 1; };
+  const dispatcher = new TaskDispatcher(board, { lease: false, concurrency: 3, worker });
+  await dispatcher.tick();
+  assert.equal(dispatcher.running, 2, "one task per lane runs");
+  await dispatcher.drain();
+  dispatcher.stop();
+  assert.ok(peak >= 2, "different lanes ran together");
+});
+
+test("cross-lane scope overlap warns but does not block", async (t) => {
+  const { board } = fixture(t);
+  const events: string[] = [];
+  board.add({ title: "a", group: "alpha", instructions: "x", checks: ["true"], scope: ["src/"] });
+  board.add({ title: "b", group: "beta", instructions: "x", checks: ["true"], scope: ["src/a.ts"] });
+  const worker = async (): Promise<void> => { await new Promise((resolve) => setTimeout(resolve, 50)); };
+  const dispatcher = new TaskDispatcher(board, { lease: false, concurrency: 3, worker, onEvent: (message) => events.push(message) });
+  await dispatcher.tick();
+  assert.equal(dispatcher.running, 2);
+  assert.ok(events.some((event) => /scope overlaps/.test(event)));
+  await dispatcher.drain();
+  dispatcher.stop();
 });
 
 test("default task concurrency scales with the machine and clamps", () => {
