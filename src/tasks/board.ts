@@ -38,6 +38,8 @@ export interface Task extends Contract {
   mergedCommit?: string;
   /** Machine-readable reason the last merge attempt was deferred (e.g. wrong branch, overlapping edits). */
   mergeBlocked?: string;
+  /** Consecutive transient run failures; reset on success or when a human resumes. */
+  consecutiveFailures?: number;
 }
 export interface Board { version: 1; tasks: Task[] }
 
@@ -312,6 +314,7 @@ export class TaskBoard {
       task.requestedAction = undefined;
       task.status = "new";
       task.merge = "not-merged";
+      task.consecutiveFailures = undefined;
       task.detail = "Queued to resume";
       return task;
     });
