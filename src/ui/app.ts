@@ -46,7 +46,7 @@ import { upsertMidasSession } from "../lib/session-store.ts";
 import { StatsView } from "./components/stats-view.ts";
 import { TasksView } from "./components/tasks-view.ts";
 import { TaskBoard, gitAsync } from "../tasks/board.ts";
-import { TaskDispatcher } from "../tasks/dispatcher.ts";
+import { defaultTaskConcurrency, TaskDispatcher } from "../tasks/dispatcher.ts";
 import { SessionHeader, StartupHeader } from "./components/startup-header.ts";
 import { OptionPicker } from "./components/option-picker.ts";
 import { PromptDialog } from "./components/prompt-dialog.ts";
@@ -1508,6 +1508,14 @@ export class MidasApp {
     const next = args === "on" ? ORCHESTRATOR_AGENT : args === "off" ? DEFAULT_AGENT : this.activeAgent === ORCHESTRATOR_AGENT ? DEFAULT_AGENT : ORCHESTRATOR_AGENT;
     if (!this.agentChoices.includes(next)) { this.fail(`Agent '${next}' is unavailable. Check agent configuration and restart Midas.`); return; }
     this.setActiveAgent(next);
+    if (next === ORCHESTRATOR_AGENT) this.flash(`Multitask on · up to ${this.taskConcurrency()} workers`);
+  }
+
+  /** Configured board worker limit (clamped) or the machine-tuned default. */
+  private taskConcurrency(): number {
+    const configured = this.options.settings.taskConcurrency;
+    if (typeof configured === "number" && Number.isInteger(configured) && configured > 0) return Math.min(configured, 16);
+    return defaultTaskConcurrency();
   }
 
   /**
@@ -3545,6 +3553,7 @@ export class MidasApp {
       return; // Not a Git repository; the /tasks panel already explains this.
     }
     const dispatcher = new TaskDispatcher(board, {
+      concurrency: this.taskConcurrency(),
       onEvent: (message) => {
         this.options.controller.transcript.addRecord(message);
         void this.refreshBranch();

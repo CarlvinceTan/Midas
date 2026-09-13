@@ -70,6 +70,8 @@ export interface PiSettings {
   defaultThinkingLevel?: string;
   modelThinkingLevels?: Record<string, string>;
   hideThinkingBlock?: boolean;
+  /** Max concurrent board task agents; defaults to a machine-tuned value. */
+  taskConcurrency?: number;
   [key: string]: unknown;
 }
 

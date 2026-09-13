@@ -7,7 +7,7 @@ import type { Event } from "@opencode-ai/sdk";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { TaskBoard, git } from "./board.ts";
 import { runTask, mergeTask, cleanupTask } from "./runner.ts";
-import { TaskDispatcher } from "./dispatcher.ts";
+import { TaskDispatcher, defaultTaskConcurrency } from "./dispatcher.ts";
 import { taskCli } from "./cli.ts";
 import { pathToFileURL } from "node:url";
 import { eventSessionId } from "../opencode/session.ts";
@@ -292,6 +292,14 @@ test("pause/resume/cancel validate task state", (t) => {
   assert.throws(() => board.resume(task.id), /not paused or blocked/);
   board.update(task.id, (t) => { t.merge = "merged"; });
   assert.throws(() => board.cancel(task.id), /already merged/);
+});
+
+test("default task concurrency scales with the machine and clamps", () => {
+  assert.equal(defaultTaskConcurrency(1), 2);
+  assert.equal(defaultTaskConcurrency(4), 3);
+  assert.equal(defaultTaskConcurrency(16), 8);
+  assert.equal(defaultTaskConcurrency(0), 2);
+  assert.ok(defaultTaskConcurrency() >= 2);
 });
 
 test("dispatcher marks interrupted runs blocked instead of double-running", async (t) => {
