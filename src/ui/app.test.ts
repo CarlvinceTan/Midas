@@ -40,8 +40,8 @@ test("a short status line is left untouched", () => {
   assert.equal(plain(lines[0]!), " ⠋ Thinking");
 });
 
-test("multitask steers a prompt into an active run", () => {
-  assert.equal(submitAction({ multitask: true, runActive: true, isCommand: false, editing: false }), "steer");
+test("multitask queues a busy prompt like every other mode", () => {
+  assert.equal(submitAction({ multitask: true, runActive: true, isCommand: false, editing: false }), "queue");
 });
 
 test("multitask sends a prompt when no run is active", () => {
@@ -52,12 +52,9 @@ test("busy input queues when multitask is off", () => {
   assert.equal(submitAction({ multitask: false, runActive: true, isCommand: false, editing: false }), "queue");
 });
 
-test("an edited follow-up goes back to its slot when multitask is off", () => {
+test("an edited follow-up goes back to its slot in every mode", () => {
+  assert.equal(submitAction({ multitask: true, runActive: true, isCommand: false, editing: true }), "requeue");
   assert.equal(submitAction({ multitask: false, runActive: true, isCommand: false, editing: true }), "requeue");
-});
-
-test("multitask steers busy input even when it was pulled from the queue", () => {
-  assert.equal(submitAction({ multitask: true, runActive: true, isCommand: false, editing: true }), "steer");
 });
 
 test("commands keep their existing routing in every mode", () => {

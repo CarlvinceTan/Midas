@@ -99,16 +99,16 @@ function directoryExists(path: string | undefined): path is string {
 }
 
 /** How a submitted draft is routed once the editor hands it to `handleSubmit`. */
-export type SubmitAction = "send" | "steer" | "queue" | "requeue" | "command";
+export type SubmitAction = "send" | "queue" | "requeue" | "command";
 
 /**
  * Decide how a submission should be routed. Kept pure (no editor/controller
- * access) so the routing rules — in particular multitask's immediate steer —
- * can be exercised without standing up a full app.
+ * access) so the routing rules can be exercised without standing up a full app.
+ * Busy normal prompts queue as follow-ups in every mode: entering text never
+ * steers, only cmd+enter does (that path bypasses this decision).
  *
  * - `command`: slash commands keep their existing, name-specific rules.
  * - `send`: dispatch a normal prompt as a fresh turn.
- * - `steer`: deliver a normal prompt into the running turn right now.
  * - `queue`: park a normal prompt in the follow-up queue.
  * - `requeue`: return an edited follow-up to its original queue slot.
  */
@@ -120,9 +120,8 @@ export function submitAction(input: {
 }): SubmitAction {
   if (input.isCommand) return "command";
   if (!input.runActive) return "send";
-  // Multitask submits into the running turn (the same path as cmd+enter)
-  // instead of parking in the follow-up queue.
-  if (input.multitask) return "steer";
+  // Multitask affects only the dispatcher keep-alive, never how a busy prompt
+  // is delivered: it always queues as a follow-up.
   return input.editing ? "requeue" : "queue";
 }
 
@@ -1759,13 +1758,6 @@ export class MidasApp {
     ensureDispatcherOnSubmit(multitask, () => this.syncDispatcher());
     const prompt =
       editing && editing.prompt.text === trimmed ? editing.prompt : this.preparePrompt(trimmed, imageAttachments);
-    if (action === "steer") {
-      // Multitask delivers busy input into the running turn (the same path as
-      // cmd+enter) rather than queuing it as a follow-up. `pendingSteers` is
-      // appended to, so back-to-back submissions are all kept.
-      this.steerPrompt(prompt, trimmed);
-      return;
-    }
     if (action === "queue") {
       this.enqueue(prompt);
       return;
