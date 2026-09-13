@@ -2,6 +2,21 @@ import { fuzzyFilter, matchesKey, truncateToWidth, visibleWidth, type Component 
 import type { ModelChoice } from "../../opencode/session.ts";
 import { theme } from "../../theme/theme.ts";
 
+/** Readable catalog names shared by the model picker and `/agents`. */
+export function modelDisplayParts(choice: ModelChoice): { name: string; provider: string } {
+  return {
+    // Catalog display names are authoritative. A raw identifier fallback (used
+    // before/without a catalog match) needs its separators made readable.
+    name: choice.name && choice.name !== choice.modelID ? choice.name : humanizeIdentifier(choice.modelID),
+    provider: humanizeIdentifier(choice.providerName || choice.providerID),
+  };
+}
+
+export function modelDisplayLabel(choice: ModelChoice): string {
+  const { name, provider } = modelDisplayParts(choice);
+  return provider ? `${name}  ${provider}` : name;
+}
+
 /** Filterable model picker overlay backed by opencode's provider catalog. */
 export class ModelPicker implements Component {
   private filter = "";
@@ -84,8 +99,9 @@ export class ModelPicker implements Component {
       }
       const isSelected = index === this.selected;
       const marker = isSelected ? t.fg("accent", "→ ") : "  ";
-      const name = isSelected ? t.fg("accent", choice.name) : t.fg("text", choice.name);
-      const provider = t.fg("muted", `  ${choice.providerName}`);
+      const display = modelDisplayParts(choice);
+      const name = isSelected ? t.fg("accent", display.name) : t.fg("text", display.name);
+      const provider = t.fg("muted", display.provider ? `  ${display.provider}` : "");
       rows.push(row(marker + name + provider));
     }
 
@@ -100,4 +116,20 @@ export class ModelPicker implements Component {
 
 function pad(text: string, width: number): string {
   return text + " ".repeat(Math.max(0, width - visibleWidth(text)));
+}
+
+function humanizeIdentifier(value: string): string {
+  const words = value.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  return words
+    .split(" ")
+    .map((word) => {
+      const lower = word.toLowerCase();
+      if (lower === "opencode") return "OpenCode";
+      if (lower === "openai") return "OpenAI";
+      if (lower === "github") return "GitHub";
+      if (lower === "gpt") return "GPT";
+      if (lower === "ai") return "AI";
+      return word === lower ? word.charAt(0).toUpperCase() + word.slice(1) : word;
+    })
+    .join(" ");
 }

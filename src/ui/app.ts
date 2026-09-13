@@ -38,12 +38,14 @@ import { FooterComponent, formatCwdForFooter, type FooterData } from "./componen
 import { Toast } from "./components/toast.ts";
 import { PermissionDialog, type PermissionResponse } from "./components/permission-dialog.ts";
 import { QuestionDialog } from "./components/question-dialog.ts";
-import { ModelPicker } from "./components/model-picker.ts";
+import { ModelPicker, modelDisplayLabel } from "./components/model-picker.ts";
 import { ThinkingPicker } from "./components/thinking-picker.ts";
 import { SessionsView } from "./components/sessions-view.ts";
+import { AGENT_LABELS, loadAgentSessions, readAgentTranscript, type AgentSession } from "../lib/agent-sessions.ts";
+import { upsertMidasSession } from "../lib/session-store.ts";
 import { StatsView } from "./components/stats-view.ts";
 import { TasksView } from "./components/tasks-view.ts";
-import { TaskBoard } from "../tasks/board.ts";
+import { TaskBoard, gitAsync } from "../tasks/board.ts";
 import { TaskDispatcher } from "../tasks/dispatcher.ts";
 import { SessionHeader, StartupHeader } from "./components/startup-header.ts";
 import { OptionPicker } from "./components/option-picker.ts";
@@ -61,7 +63,7 @@ import { SearchPicker } from "./components/search-picker.ts";
 import { readDraft, writeDraft, type StoredDraft } from "../lib/drafts.ts";
 import { readSessionState, writeSessionState, type StoredBash } from "../lib/session-state.ts";
 import { resolveCdTarget } from "../lib/shell.ts";
-import { agentCallers } from "../lib/agents.ts";
+import { agentCallerLabel, groupAgentNames, selectableAgentNames, BOARD_WORKER_AGENT, DEFAULT_INTERACTIVE_AGENT, ORCHESTRATOR_AGENT } from "../lib/agents.ts";
 import { listSkills, loadPiSettings, piAgentDir, readAuthedProviders, readLastSelectedModel, removeAuthedProvider, rowPad, thinkingLevelFor, updateGlobalSetting, updateModelThinkingLevel, writeLastSelectedModel, type PiSettings, type SkillEntry, midasConfigDir, midasProjectDir, agentsGlobalDir, agentsProjectDir } from "../config/pi.ts";
 import { loadCustomCommands, renderCommandTemplate, type CustomCommand } from "../config/commands.ts";
 import { spawn } from "node:child_process";
@@ -83,10 +85,8 @@ const HIDDEN_COMMANDS = new Set([
 const QUEUED_COMMANDS = new Set(["compact", "reload"]);
 /** Slash commands that would replace the session or start competing work. */
 const INTERRUPTING_COMMANDS = new Set(["new"]);
-/** Agents that are internal to opencode and never selected as the active agent. */
-const INTERNAL_AGENTS = new Set(["compaction", "summary", "title"]);
 /** Agent midas opens with when nothing else is configured. */
-const DEFAULT_AGENT = "task";
+const DEFAULT_AGENT = DEFAULT_INTERACTIVE_AGENT;
 
 /** Whether a persisted working directory still exists. */
 function directoryExists(path: string | undefined): path is string {
@@ -514,13 +514,16 @@ export class MidasApp {
   };
   private model: ModelChoice | undefined;
   private models: ModelChoice[] = [];
-  private agentNames: string[] = [];
+  private agentGroups: string[][] = [];
   private agentChoices: string[] = [];
   /** Set while choosing a model inside /agents, shown as a border breadcrumb. */
   private agentBreadcrumb: string | undefined;
   /** Full agent catalog (names, modes, configured models). */
   private agentCatalog: AgentChoice[] = [];
   private activeAgent = DEFAULT_AGENT;
+  /** Branch checked out in the primary worktree, shown in the pinned header. */
+  private currentBranch: string | undefined;
+  private branchTimer?: ReturnType<typeof setInterval>;
   private agentInitialized = false;
   private mcpNames: string[] = [];
   private commands: CommandChoice[] = [];
@@ -627,6 +630,7 @@ export class MidasApp {
         title: this.currentTitle(),
         status: this.computeStatus(),
         path: formatCwdForFooter(this.options.cwd.replace(/[\x00-\x1f\x7f]/g, "?"), homedir()),
+        branch: this.currentBranch,
         resources: `${this.skillNames.length} skills • ${this.mcpNames.length} mcps`,
         hidden: !this.terminalTitleEnabled(),
       }),
@@ -635,8 +639,9 @@ export class MidasApp {
     this.header = new StartupHeader(
       () => ({
         contextPaths: this.contextPaths(),
-        // No agent cycling anymore, so list every agent (not just primaries).
-        agents: this.agentNames,
+        // No agent cycling anymore, so list every agent (not just primaries),
+        // grouped entry points / subagents / utilities.
+        agentGroups: this.agentGroups,
         skills: this.headerSkills(),
         mcpNames: this.mcpNames,
         version: VERSION,
@@ -773,6 +778,11 @@ export class MidasApp {
     });
     await this.loadAgents();
     void this.loadRest();
+    // Track the checkout's branch for the header; polled because the branch can
+    // change outside Midas (a shell `git switch`, or an autonomous promotion).
+    void this.refreshBranch();
+    this.branchTimer = setInterval(() => void this.refreshBranch(), 2000);
+    this.branchTimer.unref?.();
     this.timer = setInterval(() => {
       this.spinnerIndex = (this.spinnerIndex + 1) % SPINNER_FRAMES.length;
       if (this.options.controller.transcript.phase !== "idle") this.tui.requestRender();
@@ -860,13 +870,13 @@ export class MidasApp {
   }
 
   /**
-   * Record the full agent list (header display, alphabetical) and the cycleable
-   * subset (primary agents only). Mode selection is through /multitask.
+   * Record the grouped agent list (header display) and the cycleable subset
+   * (primary agents only). Mode selection is through /multitask.
    */
   private applyAgents(agents: AgentChoice[]): void {
     this.agentCatalog = agents;
-    this.agentNames = agents.map((a) => a.name).sort((a, b) => a.localeCompare(b));
-    this.agentChoices = agents.filter((a) => a.mode === "primary" && !INTERNAL_AGENTS.has(a.name)).map((a) => a.name).sort();
+    this.agentGroups = groupAgentNames(agents);
+    this.agentChoices = selectableAgentNames(agents);
   }
 
   /** Bound a catalog request so a stalled backend cannot wedge startup or /reload. */
@@ -888,13 +898,13 @@ export class MidasApp {
     try {
       this.applyAgents(await this.withTimeout(this.options.controller.listAgents()));
     } catch {
-      this.agentNames = [];
+      this.agentGroups = [];
       this.agentChoices = [];
     }
     // Mode is session-local. Ignore the old cycle/defaultAgent setting, and do
     // not reset an explicit /multitask selection when reloading catalogs.
     if (!this.agentInitialized) {
-      this.activeAgent = this.options.agent ?? DEFAULT_AGENT;
+      this.activeAgent = this.options.agent === BOARD_WORKER_AGENT ? DEFAULT_AGENT : this.options.agent ?? DEFAULT_AGENT;
       this.agentInitialized = true;
     }
     this.options.controller.setAgent(this.activeAgent);
@@ -1376,6 +1386,7 @@ export class MidasApp {
           void this.options.controller.setTitle(title).catch(() => {
             // Persisting is best-effort; the in-memory title still applies.
           });
+          this.recordMidasSession();
           this.tui.requestRender();
         }
       })
@@ -1414,7 +1425,7 @@ export class MidasApp {
 
   private toggleMultitask(args: string): void {
     if (args && args !== "on" && args !== "off") { this.fail("Usage: /multitask [on|off]"); return; }
-    const next = args === "on" ? "orchestrator" : args === "off" ? "task" : this.activeAgent === "orchestrator" ? "task" : "orchestrator";
+    const next = args === "on" ? ORCHESTRATOR_AGENT : args === "off" ? DEFAULT_AGENT : this.activeAgent === ORCHESTRATOR_AGENT ? DEFAULT_AGENT : ORCHESTRATOR_AGENT;
     if (!this.agentChoices.includes(next)) { this.fail(`Agent '${next}' is unavailable. Check agent configuration and restart Midas.`); return; }
     this.setActiveAgent(next);
   }
@@ -1528,6 +1539,14 @@ export class MidasApp {
   /** Persist the active session's working directory and `!` history. */
   private persistSessionState(): void {
     writeSessionState(this.options.controller.id, { cwd: this.options.cwd, bash: this.sessionBash });
+    this.recordMidasSession();
+  }
+
+  /** Index the active session in Midas's own registry (not opencode's list). */
+  private recordMidasSession(): void {
+    const id = this.options.controller.id;
+    if (!id) return;
+    upsertMidasSession({ id, cwd: this.options.cwd, title: this.title });
   }
 
   /** Append a finished `!` run to the session history and persist it. */
@@ -1786,6 +1805,20 @@ export class MidasApp {
     this.dispatcher = undefined;
     await this.reloadForDirectory();
     this.syncDispatcher();
+    void this.refreshBranch();
+  }
+
+  /** Refresh the header branch; a cheap no-op until the checkout's branch changes. */
+  private async refreshBranch(): Promise<void> {
+    let branch: string | undefined;
+    try {
+      branch = (await gitAsync(this.options.cwd, "symbolic-ref", "-q", "--short", "HEAD")) || undefined;
+    } catch {
+      branch = undefined;
+    }
+    if (branch === this.currentBranch) return;
+    this.currentBranch = branch;
+    this.tui.requestRender();
   }
 
   /** Reload directory-scoped resources (skills, commands, MCPs, agents). */
@@ -2411,25 +2444,33 @@ export class MidasApp {
       return;
     }
     const overrides = this.agentModelMap();
-    const agents = [...this.agentCatalog].sort((a, b) => a.name.localeCompare(b.name));
-    const items = agents.map((agent) => {
+    const byName = new Map(this.agentCatalog.map((agent) => [agent.name, agent]));
+    const agents = groupAgentNames(this.agentCatalog).flatMap((names, group) =>
+      names.flatMap((name) => {
+        const agent = byName.get(name);
+        return agent ? [{ agent, group: String(group) }] : [];
+      }),
+    );
+    const items = agents.map(({ agent, group }) => {
       const configured = agent.model ? `${agent.model.providerID}/${agent.model.modelID}` : undefined;
+      const selected = this.resolveModelRef(overrides[agent.name] ?? configured);
+      const callerLabel = agentCallerLabel(this.agentCatalog, agent.name);
+      const global = this.model;
+      const defaultLabel =
+        callerLabel
+          ? `Default (${callerLabel})`
+          : global
+            ? `Default (${modelDisplayLabel(global)})`
+            : "Default (global model)";
       return {
         id: `agent:${agent.name}`,
         label: capitalize(agent.name),
-        currentValue: overrides[agent.name] ?? configured ?? "default",
+        currentValue: selected ? modelDisplayLabel(selected) : defaultLabel,
+        group,
         submenu: (_current: string, done: (value?: string) => void) => {
           // "Default" means no per-agent override. For a subagent, name the
           // agent(s) it can be invoked by (where its model is inherited from);
           // fall back to the global model for agents nothing can call.
-          const callers = agentCallers(this.agentCatalog, agent.name);
-          const global = this.model;
-          const defaultLabel =
-            callers.length > 0
-              ? `Default (${callers.join("/")})`
-              : global
-                ? `Default (${global.name || `${global.providerID}/${global.modelID}`})`
-                : "Default (global model)";
           const choices: ModelChoice[] = [
             { providerID: "", modelID: "", name: defaultLabel, providerName: "" },
             ...this.models,
@@ -2446,10 +2487,10 @@ export class MidasApp {
             (choice) => {
               if (!choice.providerID) {
                 this.setAgentModel(agent.name, undefined);
-                finish("default");
+                finish(defaultLabel);
               } else {
                 this.setAgentModel(agent.name, `${choice.providerID}/${choice.modelID}`);
-                finish(`${choice.providerID}/${choice.modelID}`);
+                finish(modelDisplayLabel(choice));
               }
             },
             () => finish(),
@@ -2666,12 +2707,16 @@ export class MidasApp {
       this.saveDraftNow();
       this.persistSessionState();
       await this.options.controller.newSession();
+      // Multitask is session-local. Every new conversation starts in the normal
+      // interactive agent; the user explicitly enables the orchestrator again.
+      this.setActiveAgent(DEFAULT_AGENT);
       this.sessionBash = [];
       this.restoreDraft(this.options.controller.id);
       this.transcriptView.reset();
       this.resetTitle();
       this.resetStats();
       this.showContext = false;
+      this.recordMidasSession();
       this.flash("New session");
     } catch (error) {
       this.fail(error instanceof Error ? error.message : String(error));
@@ -2697,13 +2742,13 @@ export class MidasApp {
     const busy = (): boolean => this.options.controller.transcript.phase !== "idle";
     const view = new SessionsView({
       cwd: this.options.cwd,
-      onNew: () => {
+      onNew: (directory) => {
         if (busy()) {
           this.flash("Can't start a new session while the agent is working");
           return;
         }
         this.closeOverlay();
-        void this.doNewSession();
+        void this.newSessionIn(directory);
       },
       onResume: (session) => {
         if (busy()) {
@@ -2711,26 +2756,48 @@ export class MidasApp {
           return;
         }
         this.closeOverlay();
-        void this.resumeSession(session);
+        void this.resumeAgentSession(session);
       },
       onCancel: () => this.closeOverlay(),
     });
-    this.showOverlay(new PanelOverlay("Sessions", view), { width: "72%", maxHeight: "70%" });
-    // Current directory first (fast), then all projects in the background.
-    void this.options.controller
-      .listSessions()
-      .then((sessions) => {
-        view.setHere(sessions);
+    view.setLoading();
+    this.showOverlay(new PanelOverlay(() => view.currentTitle(), view), { width: "72%", maxHeight: "70%" });
+    // Scan the agent stores in the background; Midas's own registry loads first.
+    void loadAgentSessions()
+      .then(async (sessions) => {
+        await this.recoverMidasTitles(sessions);
+        view.setSessions(sessions);
         this.tui.requestRender();
       })
-      .catch(() => view.setHere([]));
-    void this.options.controller
-      .listSessions(null)
-      .then((sessions) => {
-        view.setAll(sessions);
+      .catch(() => {
+        view.setSessions([]);
         this.tui.requestRender();
-      })
-      .catch(() => view.setAll([]));
+      });
+  }
+
+  /**
+   * Fill in titles for Midas sessions whose registry entry has none, using the
+   * title opencode recorded (e.g. generated before the registry existed).
+   */
+  private async recoverMidasTitles(sessions: AgentSession[]): Promise<void> {
+    const untitled = sessions.filter((session) => session.agent === "midas" && session.title === "New session");
+    if (untitled.length === 0) return;
+    try {
+      const known = await this.options.controller.listSessions(null);
+      const byId = new Map(
+        known
+          .map((session) => [session.id, usableSessionTitle(session.title)] as const)
+          .filter(([, title]) => Boolean(title)),
+      );
+      for (const session of untitled) {
+        const title = byId.get(session.id);
+        if (!title) continue;
+        session.title = title;
+        upsertMidasSession({ id: session.id, cwd: session.projectDir, title });
+      }
+    } catch {
+      // Title recovery is best-effort; the placeholder stays.
+    }
   }
 
   /**
@@ -2817,6 +2884,73 @@ export class MidasApp {
     }
   }
 
+  /** Start a fresh Midas session, re-rooting to the chosen project first. */
+  private async newSessionIn(directory: string): Promise<void> {
+    if (directory && directory !== this.options.cwd && directoryExists(directory)) {
+      await this.changeDirectory(directory);
+    }
+    await this.doNewSession();
+  }
+
+  /** Resume a discovered session: Midas sessions open in place, others import. */
+  private async resumeAgentSession(session: AgentSession): Promise<void> {
+    if (session.agent === "midas") {
+      await this.resumeSession({
+        id: session.id,
+        directory: session.projectDir,
+        title: session.title,
+      } as unknown as Session);
+      return;
+    }
+    await this.continueAgentSession(session);
+  }
+
+  /**
+   * Continue a session that started in another agent inside Midas: start a new
+   * Midas session in the same project and seed it with the imported transcript,
+   * so the conversation carries on here instead of handing off to that CLI.
+   */
+  private async continueAgentSession(session: AgentSession): Promise<void> {
+    const label = AGENT_LABELS[session.agent];
+    // A grouped session (e.g. Codex "Other") may point at a per-run directory
+    // that is gone; fall back to the shared group directory when it exists.
+    const directory = directoryExists(session.projectDir)
+      ? session.projectDir
+      : session.groupKey && directoryExists(session.groupKey)
+        ? session.groupKey
+        : undefined;
+    if (!directory) return this.fail(`${label} project directory is gone: ${session.projectDir}`);
+    try {
+      if (directory !== this.options.cwd) await this.changeDirectory(directory);
+      await this.doNewSession();
+      const transcript = await readAgentTranscript(session);
+      await this.options.controller.addContext(this.continuationPrompt(session, transcript));
+      const title = usableSessionTitle(session.title);
+      if (title) {
+        this.title = title;
+        this.applyTerminalTitle(title);
+        void this.options.controller.setTitle(title).catch(() => {
+          // Persisting the imported title is best-effort.
+        });
+      }
+      this.recordMidasSession();
+      this.tui.requestRender();
+      this.flash(`Continuing ${label} session in Midas`);
+    } catch (error) {
+      this.fail(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /** The imported-context message that seeds a continued foreign session. */
+  private continuationPrompt(session: AgentSession, transcript: string): string {
+    const label = AGENT_LABELS[session.agent];
+    const header = `This Midas session continues a ${label} session (id: ${session.id}) started in ${session.projectDir}.`;
+    if (!transcript) {
+      return `${header}\n\nNo transcript could be imported; continue from the user's next message.`;
+    }
+    return `${header}\n\n--- Imported transcript (oldest to newest) ---\n\n${transcript}\n\n--- End of imported transcript ---\n\nContinue this conversation from where it left off. Do not repeat the transcript; wait for the user's next message.`;
+  }
+
   private async resumeSession(session: Session): Promise<void> {
     try {
       // Keep the outgoing session's draft and shell state before switching.
@@ -2840,6 +2974,7 @@ export class MidasApp {
         this.title = restored;
         this.applyTerminalTitle(restored);
       }
+      this.recordMidasSession();
       this.resetStats();
       this.showContext = this.hasContextUsage();
       this.flash("Resumed session");
@@ -3225,7 +3360,7 @@ export class MidasApp {
    * next start. A missing Git repo just leaves the board unavailable.
    */
   private syncDispatcher(): void {
-    const shouldRun = this.activeAgent === "orchestrator";
+    const shouldRun = this.activeAgent === ORCHESTRATOR_AGENT;
     if (!shouldRun) {
       this.dispatcher?.stop();
       this.dispatcher = undefined;
@@ -3239,8 +3374,12 @@ export class MidasApp {
       return; // Not a Git repository; the /tasks panel already explains this.
     }
     const dispatcher = new TaskDispatcher(board, {
+      // Never merge into the primary worktree while the user or the orchestrator
+      // is writing it; Git is still the final guard against a clobber.
+      canPromote: () => !this.isRunActive() && this.activeOverlay === undefined && !this.shellProcess,
       onEvent: (message) => {
         this.options.controller.transcript.addRecord(message);
+        void this.refreshBranch();
         this.tui.requestRender();
       },
     });
@@ -3306,7 +3445,7 @@ export class MidasApp {
     const frame = new RoundedDialogFrame(
       () => Math.min(1, rowPad(this.options.cwd)),
       undefined,
-      this.activeAgent === "orchestrator" ? "Multitask" : undefined,
+      this.activeAgent === ORCHESTRATOR_AGENT ? "Multitask" : undefined,
       { top: () => this.historyLabel("up"), bottom: () => this.historyLabel("down") },
     );
     frame.addChild(this.editor);
@@ -3393,6 +3532,7 @@ export class MidasApp {
     if (this.tasksTimer) clearInterval(this.tasksTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
     if (this.timer) clearInterval(this.timer);
+    if (this.branchTimer) clearInterval(this.branchTimer);
     if (this.rateTimer) clearInterval(this.rateTimer);
     if (this.toastTimer) clearTimeout(this.toastTimer);
     this.toastHandle?.hide();

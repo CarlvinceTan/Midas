@@ -82,6 +82,8 @@ export class SettingsList {
             const item = displayItems[i];
             if (!item)
                 continue;
+            if (this.separatesGroup(displayItems, i, startIndex))
+                lines.push("");
             const isSelected = i === this.selectedIndex;
             const prefix = isSelected ? this.theme.cursor : "  ";
             const prefixWidth = visibleWidth(prefix);
@@ -138,9 +140,21 @@ export class SettingsList {
         // Hover must not change selection: the visible range is centered on it.
         if (event.button !== "left" || (event.type !== "press" && event.type !== "click"))
             return undefined;
-        const rowOffset = this.searchEnabled ? 2 : 0;
         const { startIndex, endIndex } = this.getVisibleRange(displayItems);
-        const itemIndex = startIndex + event.y - rowOffset;
+        let row = this.searchEnabled ? 2 : 0;
+        let itemIndex = -1;
+        for (let i = startIndex; i < endIndex; i++) {
+            if (this.separatesGroup(displayItems, i, startIndex)) {
+                if (event.y === row)
+                    return undefined;
+                row++;
+            }
+            if (event.y === row) {
+                itemIndex = i;
+                break;
+            }
+            row++;
+        }
         if (itemIndex < startIndex || itemIndex >= endIndex)
             return undefined;
         if (event.type === "press") {
@@ -194,6 +208,13 @@ export class SettingsList {
     getVisibleRange(displayItems) {
         const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), displayItems.length - this.maxVisible));
         return { startIndex, endIndex: Math.min(startIndex + this.maxVisible, displayItems.length) };
+    }
+    separatesGroup(items, index, startIndex) {
+        if (index <= startIndex || (this.searchEnabled && this.searchInput?.getValue()))
+            return false;
+        const current = items[index]?.group;
+        const previous = items[index - 1]?.group;
+        return current !== previous && (current !== undefined || previous !== undefined);
     }
     activateItem() {
         const item = this.getDisplayItems()[this.selectedIndex];

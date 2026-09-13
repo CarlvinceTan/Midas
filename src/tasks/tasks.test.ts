@@ -203,6 +203,28 @@ test("dispatcher respects concurrency and waits for dependency merges", async (t
   assert.equal(board.get(dependent.id).status, "completed");
 });
 
+test("dispatcher promotes merged work onto the checked-out branch when allowed", async (t) => {
+  const { cwd, board } = fixture(t);
+  const task = board.add(contract);
+  let idle = false;
+  const dispatcher = new TaskDispatcher(board, {
+    lease: false,
+    intervalMs: 10,
+    concurrency: 1,
+    canPromote: () => idle,
+    worker: async (_, attempt) => { writeFileSync(join(attempt.worktree, "result.txt"), "done"); },
+  });
+  await settle(dispatcher);
+  // Gated: the work is integrated but not yet on the checked-out branch.
+  assert.throws(() => git(cwd, "show", "main:result.txt"));
+  assert.equal(git(cwd, "show", "midas/integration:result.txt"), "done");
+  idle = true;
+  await dispatcher.tick();
+  await dispatcher.drain();
+  dispatcher.stop();
+  assert.equal(git(cwd, "show", "main:result.txt"), "done");
+});
+
 test("dispatcher marks interrupted runs blocked instead of double-running", async (t) => {
   const { cwd, board } = fixture(t);
   const task = board.add(contract);

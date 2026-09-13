@@ -113,7 +113,7 @@ export class RunView implements Component {
         .join("\n")
         .trim();
       if (text) {
-        const component = new UserPromptCard(text, pad, this.borderColor);
+        const component = new UserPromptCard(text, pad, this.borderColor, prompt.imageFilenames ?? []);
         lines.push(...component.render(width));
         promptRendered = true;
       }

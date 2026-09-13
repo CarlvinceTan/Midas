@@ -8,6 +8,8 @@ export interface SettingItem {
     description?: string;
     /** Current value to display (right side) */
     currentValue: string;
+    /** Optional visual group; a blank row separates adjacent groups. */
+    group?: string;
     /** If provided, Enter/Space cycles through these values */
     values?: string[];
     /** If provided, Enter opens this submenu. Receives current value and done callback.

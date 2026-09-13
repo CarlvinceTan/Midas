@@ -70,6 +70,8 @@ export interface MessageView {
    */
   version?: number;
   parts: PartView[];
+  /** Filenames of image/file parts attached to this message (for chip styling). */
+  imageFilenames?: string[];
 }
 
 export type SessionPhase = "idle" | "busy" | "retry";
@@ -197,6 +199,18 @@ export class Transcript {
     if (!message) return;
     this.owner.set(part.id, part.messageID);
     const existing = this.partIndex.get(part.id);
+    // File parts (pasted images) don't render on their own, but the user's text
+    // contains an `[Image: name]` chip for them. Record the name so the prompt
+    // card can style only real attachments, not typed lookalikes.
+    if (part.type === "file") {
+      if (part.filename) {
+        const names = (message.imageFilenames ??= []);
+        if (!names.includes(part.filename)) names.push(part.filename);
+      }
+      this.touch(message);
+      this.emit();
+      return;
+    }
     // opencode streams prose as deltas; apply them so text grows incrementally
     // instead of jumping between sparse full-part snapshots.
     if (existing && delta && (existing.kind === "text" || existing.kind === "reasoning")) {

@@ -33,6 +33,9 @@ export interface Task extends Contract {
 }
 export interface Board { version: 1; tasks: Task[] }
 
+/** Staging branch every board task integrates into before being promoted. */
+export const INTEGRATION_BRANCH = "midas/integration";
+
 /**
  * Blocking git. Reserved for one-time setup (resolving the board directory) and
  * tests; runtime worktree/merge/validation operations must use `gitAsync` so a
@@ -164,7 +167,7 @@ export class TaskBoard {
       for (const id of c.dependencies ?? []) if (!board.tasks.some((t) => t.id === id)) throw new Error(`Unknown dependency: ${id}`);
       const task: Task = { title: c.title, instructions: c.instructions, checks: [...c.checks], group: c.group,
         dependencies: [...(c.dependencies ?? [])], id: `T${board.tasks.length + 1}`, status: "new", merge: "not-merged",
-        target: "midas/integration", attempts: [] };
+        target: INTEGRATION_BRANCH, attempts: [] };
       board.tasks.push(task);
       return task;
     });

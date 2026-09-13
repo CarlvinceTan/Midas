@@ -5,6 +5,7 @@ import { MidasApp } from "./ui/app.ts";
 import { loadPiSettings, midasConfigFile } from "./config/pi.ts";
 import { dim } from "./lib/ansi.ts";
 import { taskCli } from "./tasks/cli.ts";
+import { BOARD_WORKER_AGENT } from "./lib/agents.ts";
 
 interface Cli {
   cwd: string;
@@ -209,6 +210,9 @@ async function runTui(cli: Cli): Promise<void> {
 async function main(): Promise<void> {
   if (process.argv[2] === "task") return taskCli(process.argv.slice(3));
   const cli = parseArgs(process.argv.slice(2));
+  if (cli.agent === BOARD_WORKER_AGENT) {
+    throw new Error("Agent 'task' is reserved for autonomous board workers; use 'main' or /multitask");
+  }
   if (cli.help) {
     usage();
     return;

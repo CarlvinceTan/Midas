@@ -8,6 +8,8 @@ export interface SessionHeaderInfo {
   status?: string;
   /** Right-aligned current path shown on the title row. */
   path?: string;
+  /** Git branch for the primary worktree, shown in parentheses after the path. */
+  branch?: string;
   /** Right-aligned "N skills • M mcps" summary shown on the status row. */
   resources?: string;
   /** Hide the whole pinned header (the terminal-title setting is off). */
@@ -37,7 +39,8 @@ export class SessionHeader implements Component {
     const title = t.bold(t.fg("text", data.title || "New Session"));
     const status = t.fg("muted", data.status || "Idle");
     // Path and skills/mcps summary sit on the right of the two header rows.
-    const line1 = data.path ? alignSides(title, t.fg("dim", data.path), inner, ellipsis) : title;
+    const location = data.path && data.branch ? `${data.path} (${data.branch})` : data.path;
+    const line1 = location ? alignSides(title, t.fg("dim", location), inner, ellipsis) : title;
     const line2 = data.resources ? alignSides(status, t.fg("dim", data.resources), inner, ellipsis) : status;
     // A rule under the title/status makes the pinned header read as a header.
     // It is decoration: inset by the row padding and excluded from copy.
@@ -53,7 +56,8 @@ export class SessionHeader implements Component {
 
 export interface StartupResources {
   contextPaths: string[];
-  agents: string[];
+  /** Agents grouped for display; a blank row separates each group. */
+  agentGroups: string[][];
   skills: string[];
   mcpNames: string[];
   version: string;
@@ -66,9 +70,16 @@ export interface StartupResources {
  *   ~/.pi/agent/AGENTS.md
  *
  *   [Agents]
+ *   main
+ *   orchestrator
+ *
  *   advisor
  *   explore
- *   main
+ *   task
+ *
+ *   compaction
+ *   summary
+ *   title
  *
  *   [Skills]
  *   None
@@ -90,9 +101,15 @@ export class StartupHeader implements Component {
     const lines: string[] = [];
 
     // Context / Agents / Skills / MCPs render side by side as left-aligned columns.
+    // Agent groups are flattened with a blank row between them, so the columns
+    // stay row-aligned while the grouping reads as spacing.
+    const agentItems =
+      data.agentGroups.length > 0
+        ? data.agentGroups.flatMap((group, index) => (index > 0 ? ["", ...group] : group))
+        : ["None"];
     const columns: Array<{ title: string; items: string[] }> = [
       { title: "[Context]", items: data.contextPaths.length > 0 ? data.contextPaths : ["None"] },
-      { title: "[Agents]", items: data.agents.length > 0 ? data.agents : ["None"] },
+      { title: "[Agents]", items: agentItems },
       { title: "[Skills]", items: data.skills.length > 0 ? data.skills : ["None"] },
       { title: "[MCPs]", items: data.mcpNames.length > 0 ? data.mcpNames : ["None"] },
     ];

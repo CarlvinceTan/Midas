@@ -1,7 +1,7 @@
 import type { Event, OpencodeClient, Part, Permission, Session } from "@opencode-ai/sdk";
 import { Transcript, type QuestionView } from "../state/transcript.ts";
 import type { PromptAttachment } from "../lib/attachments.ts";
-import type { AgentPermissionRule } from "../lib/agents.ts";
+import { BOARD_WORKER_AGENT, DEFAULT_INTERACTIVE_AGENT, ORCHESTRATOR_AGENT, type AgentPermissionRule } from "../lib/agents.ts";
 
 export interface ModelChoice {
   providerID: string;
@@ -112,7 +112,7 @@ export class SessionController {
   private usageCache = new Map<string, UsageTotals>();
   private eventAbort: AbortController | undefined;
   private model: { providerID: string; modelID: string } | undefined;
-  private agent: string = "task";
+  private agent: string = DEFAULT_INTERACTIVE_AGENT;
   /** Serializes event handling so part/message ordering is deterministic. */
   private queue: Promise<void> = Promise.resolve();
 
@@ -382,6 +382,23 @@ export class SessionController {
     });
   }
 
+  /**
+   * Append a user-visible message to the session without asking the model to
+   * reply. Used to seed a session with imported context (e.g. continuing a
+   * session that started in another agent).
+   */
+  async addContext(text: string): Promise<void> {
+    if (!this.sessionId) throw new Error("No active session");
+    await this.client.session.prompt({
+      path: { id: this.sessionId },
+      query: { directory: this.cwd },
+      body: { parts: [{ type: "text" as const, text }], noReply: true },
+      signal: AbortSignal.timeout(20_000),
+    });
+    // Re-read messages so the appended context is visible immediately.
+    await this.resume(this.sessionId);
+  }
+
   async abort(): Promise<void> {
     if (!this.sessionId) return;
     await this.client.session.abort({ path: { id: this.sessionId }, query: { directory: this.cwd } });
@@ -434,7 +451,7 @@ export class SessionController {
   }
 
   setAgent(agent: string | undefined): void {
-    this.agent = agent ?? "task";
+    this.agent = agent === BOARD_WORKER_AGENT ? DEFAULT_INTERACTIVE_AGENT : agent ?? DEFAULT_INTERACTIVE_AGENT;
   }
 
   /** Update the working directory used for subsequent requests. */
@@ -702,17 +719,16 @@ export class SessionController {
   }
 
   /**
-   * The agent opencode uses by default: the first primary agent, preferring
-   * `orchestrator` then `main`. Internal agents (compaction/summary/title)
-   * are skipped.
+   * The agent Midas uses by default: `main`, then another user-facing primary.
+   * The orchestrator is entered explicitly through `/multitask`; the task agent
+   * is reserved for isolated board workers.
    */
   async defaultAgent(): Promise<string | undefined> {
-    const internal = new Set(["compaction", "summary", "title", "general"]);
+    const internal = new Set(["compaction", "summary", "title", "general", BOARD_WORKER_AGENT, ORCHESTRATOR_AGENT]);
     const agents = await this.listAgents();
     const primary = agents.filter((agent) => agent.mode === "primary" && !internal.has(agent.name));
     return (
-      primary.find((agent) => agent.name === "task")?.name ??
-      primary.find((agent) => agent.name === "orchestrator")?.name ??
+      primary.find((agent) => agent.name === DEFAULT_INTERACTIVE_AGENT)?.name ??
       primary[0]?.name
     );
   }

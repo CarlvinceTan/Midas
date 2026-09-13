@@ -13,30 +13,53 @@ const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
  */
 const UNICODE_SPACE_REGEX = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g;
 
+/** Atomic image chips, e.g. `[Image: screenshot.png]`, as the editor emits them. */
+const IMAGE_MARKER_REGEX = /\[Image: [^\]\n]*\]/g;
+
+/** Yellow, matching the editor's `[Image: …]` chips. */
+const IMAGE_MARKER_COLOR = "\x1b[33m";
+
 /**
  * User prompt card: markdown text inside a rounded, coloured border. Ported from
  * pi's user-message component (the published build renders a borderless
  * background box), so midas keeps the bordered prompt styling.
  */
 export class UserPromptCard extends Container {
+  private readonly imageNames: Set<string>;
+
   constructor(
     private text: string,
     private outputPad: number,
     private borderColor: (content: string) => string,
+    imageFilenames: string[] = [],
   ) {
     super();
+    // Normalize exactly like the displayed text so macOS screenshot names match.
+    this.imageNames = new Set(imageFilenames.map((name) => name.replace(UNICODE_SPACE_REGEX, " ")));
     this.rebuild();
   }
 
   private rebuild(): void {
     this.clear();
     const contentBox = new Box(this.outputPad, 0);
+    const promptText = this.text.replace(UNICODE_SPACE_REGEX, " ");
+    // Image chips are yellow in the editor; render them the same way here. Only
+    // markers for real attachments are styled — typed `[Image: …]` text stays
+    // plain. The chip is wrapped as inline code so markdown leaves it intact,
+    // then the code style paints it yellow and restores the prompt text colour.
+    const markdownTheme = {
+      ...getMarkdownTheme(),
+      code: (content: string) => `${IMAGE_MARKER_COLOR}${content}${theme().getFgAnsi("userMessageText")}`,
+    };
     contentBox.addChild(
       new Markdown(
-        this.text.replace(UNICODE_SPACE_REGEX, " "),
+        promptText.replace(IMAGE_MARKER_REGEX, (marker) => {
+          const name = marker.slice("[Image: ".length, -1);
+          return this.imageNames.has(name) ? `\`${marker}\`` : marker;
+        }),
         0,
         0,
-        getMarkdownTheme(),
+        markdownTheme,
         { color: (content: string) => theme().fg("userMessageText", content) },
         { preserveOrderedListMarkers: true, preserveBackslashEscapes: true },
       ),

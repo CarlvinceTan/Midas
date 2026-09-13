@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agentCallers, canInvokeAgent, type AgentLike } from "./agents.ts";
+import { agentCallerLabel, agentCallers, canInvokeAgent, groupAgentNames, selectableAgentNames, type AgentLike } from "./agents.ts";
 
 const rule = (permission: string, pattern: string, action: string) => ({ permission, pattern, action });
 
@@ -33,6 +33,16 @@ test("agentCallers lists the agents that can invoke a subagent", () => {
   assert.deepEqual(agentCallers(agents, "task"), []);
 });
 
+test("agentCallerLabel formats inherited-model parents for /agents", () => {
+  const withMainParent = agents.map((agent) =>
+    agent.name === "main"
+      ? { ...agent, permission: [rule("task", "explore", "allow")] }
+      : agent,
+  );
+  assert.equal(agentCallerLabel(withMainParent, "explore"), "Main, Orchestrator, Task, Advisor");
+  assert.equal(agentCallerLabel(agents, "task"), undefined);
+});
+
 test("canInvokeAgent follows last-match-wins and glob patterns", () => {
   const caller: AgentLike = {
     name: "x",
@@ -55,4 +65,28 @@ test("agentCallers skips hidden agents", () => {
     permission: [rule("task", "explore", "allow")],
   };
   assert.deepEqual(agentCallers([...agents, hidden], "explore"), ["orchestrator", "task", "advisor"]);
+});
+
+test("groupAgentNames orders entry points, subagents, then internals", () => {
+  const catalog: AgentLike[] = [
+    { name: "title", mode: "primary" },
+    { name: "explore", mode: "subagent" },
+    { name: "orchestrator", mode: "primary" },
+    { name: "compaction", mode: "primary" },
+    { name: "advisor", mode: "subagent" },
+    { name: "main", mode: "primary" },
+    { name: "task", mode: "primary" },
+    { name: "merge", mode: "subagent" },
+  ];
+  assert.deepEqual(groupAgentNames(catalog), [
+    ["main", "orchestrator"],
+    ["advisor", "explore", "merge", "task"],
+    ["compaction", "title"],
+  ]);
+  // Empty groups are omitted.
+  assert.deepEqual(groupAgentNames([{ name: "explore", mode: "subagent" }]), [["explore"]]);
+});
+
+test("selectableAgentNames excludes the board-only task agent", () => {
+  assert.deepEqual(selectableAgentNames(agents), ["main", "orchestrator"]);
 });

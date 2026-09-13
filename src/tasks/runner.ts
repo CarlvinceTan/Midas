@@ -7,6 +7,7 @@ import type { Session } from "@opencode-ai/sdk";
 import { TaskBoard, gitAsync, type Task, type Attempt } from "./board.ts";
 import { startServer } from "../opencode/server.ts";
 import { midasConfigFile } from "../config/pi.ts";
+import { BOARD_WORKER_AGENT } from "../lib/agents.ts";
 
 async function checks(task: Task, cwd: string): Promise<void> {
   for (const command of task.checks) {
@@ -37,7 +38,7 @@ const worker: Worker = async (task, attempt, onSession) => {
       if (!abort.signal.aborted) abort.abort(new Error("Worker event stream closed"));
     })().catch((error) => { if (!abort.signal.aborted) abort.abort(error); });
     const result = await server.client.session.prompt({ path: { id: session.id }, query: { directory: attempt.worktree }, signal: abort.signal,
-      body: { agent: "task", parts: [{ type: "text", text: `Execute only this task in ${attempt.worktree}. Do not commit, change branches, merge, or edit the board. The controller owns Git and validation. Finish your final response with MIDAS_TASK_DONE only if the task is fully implemented; otherwise explain the blocker.\n\n${task.title}\n${task.instructions}\n\nRequired checks:\n${task.checks.join("\n")}` }] },
+      body: { agent: BOARD_WORKER_AGENT, parts: [{ type: "text", text: `Execute only this task in ${attempt.worktree}. Do not commit, change branches, merge, or edit the board. The controller owns Git and validation. Finish your final response with MIDAS_TASK_DONE only if the task is fully implemented; otherwise explain the blocker.\n\n${task.title}\n${task.instructions}\n\nRequired checks:\n${task.checks.join("\n")}` }] },
     }) as unknown as { info?: { error?: unknown }; parts?: Array<{ type: string; text?: string }> };
     if (result.info?.error) throw new Error(`Worker failed: ${JSON.stringify(result.info.error)}`);
     const text = (result.parts ?? []).filter((p) => p.type === "text").map((p) => p.text ?? "").join("\n");

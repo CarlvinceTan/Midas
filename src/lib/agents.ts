@@ -13,6 +13,38 @@ export interface AgentLike {
   permission?: AgentPermissionRule[];
 }
 
+/** Agents internal to opencode that never appear as selectable primaries. */
+export const INTERNAL_AGENT_NAMES = new Set(["compaction", "summary", "title"]);
+
+/** The normal user-facing agent for every new Midas session. */
+export const DEFAULT_INTERACTIVE_AGENT = "main";
+
+/** Enabled only through `/multitask`. */
+export const ORCHESTRATOR_AGENT = "orchestrator";
+
+/** Internal board worker; users never select this agent directly. */
+export const BOARD_WORKER_AGENT = "task";
+
+/** User-facing entry points, listed at the top of the startup header. */
+const ENTRY_AGENTS = new Set([DEFAULT_INTERACTIVE_AGENT, ORCHESTRATOR_AGENT]);
+
+/** Agents shown under the entry points even though they are `mode: primary`. */
+const SUBAGENT_AGENTS = new Set([BOARD_WORKER_AGENT]);
+
+/** Primary agents the user may enter directly; the task worker is board-only. */
+export function selectableAgentNames(agents: AgentLike[]): string[] {
+  return agents
+    .filter(
+      (agent) =>
+        agent.mode === "primary" &&
+        !agent.hidden &&
+        !INTERNAL_AGENT_NAMES.has(agent.name) &&
+        agent.name !== BOARD_WORKER_AGENT,
+    )
+    .map((agent) => agent.name)
+    .sort((a, b) => a.localeCompare(b));
+}
+
 function globToRegExp(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
   return new RegExp(`^${escaped}$`);
@@ -44,4 +76,37 @@ export function agentCallers(agents: AgentLike[], target: string): string[] {
       return primary !== 0 ? primary : a.name.localeCompare(b.name);
     })
     .map((agent) => agent.name);
+}
+
+/** Human-readable parent-agent list for a subagent's inherited default model. */
+export function agentCallerLabel(agents: AgentLike[], target: string): string | undefined {
+  const callers = agentCallers(agents, target);
+  if (callers.length === 0) return undefined;
+  return callers
+    .map((name) => name.charAt(0).toUpperCase() + name.slice(1))
+    .join(", ");
+}
+
+/**
+ * Group agents for display, in order: entry points (main/orchestrator), then
+ * subagents, then opencode internals (compaction/summary/title). Empty groups
+ * are dropped and names are alphabetical within each group.
+ */
+export function groupAgentNames(agents: AgentLike[]): string[][] {
+  const groups: string[][] = [[], [], []];
+  for (const agent of agents) {
+    groups[agentGroup(agent)]!.push(agent.name);
+  }
+  return groups
+    .map((group) => group.sort((a, b) => a.localeCompare(b)))
+    .filter((group) => group.length > 0);
+}
+
+function agentGroup(agent: AgentLike): number {
+  if (INTERNAL_AGENT_NAMES.has(agent.name)) return 2;
+  if (ENTRY_AGENTS.has(agent.name)) return 0;
+  // `task` is the board worker that picks up orchestrator tasks, so it reads as
+  // a subagent here even though its mode is `primary`.
+  if (SUBAGENT_AGENTS.has(agent.name) || agent.mode !== "primary") return 1;
+  return 0;
 }
