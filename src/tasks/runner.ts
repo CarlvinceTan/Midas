@@ -21,6 +21,54 @@ export const stdoutOutput: OutputSink = (chunk) => { process.stdout.write(chunk)
 /** Bound on how much failed-check output is folded into the task detail. */
 const FAILURE_TAIL = 2000;
 
+/** How many consecutive transient failures are retried before a task is parked. */
+export const TRANSIENT_RETRY_BUDGET = 2;
+
+/** Whether a run failure should be retried automatically or parked for a human. */
+export type FailureKind = "transient" | "deterministic";
+
+/**
+ * Failures that describe the work itself. Checked before the transient patterns
+ * so a failed check whose output merely mentions the network is never retried.
+ */
+const DETERMINISTIC_FAILURES: RegExp[] = [
+  /Check failed/i,
+  /did not report completion/i,
+  /Worker needs interactive input/i,
+  /changed HEAD or branch/i,
+  /Checks modified/i,
+  /Commit hooks changed validated content/i,
+  /Worktree changed during commit/i,
+];
+
+/**
+ * Infrastructure failures: the worker/backend could not be provisioned, the
+ * transport dropped, or the worker timed out. These say nothing about whether
+ * the task itself can succeed, so the dispatcher re-picks them automatically.
+ */
+const TRANSIENT_FAILURES: RegExp[] = [
+  /did not create a (worker|merge) session/i,
+  /session (create|creation)|create session|creating session/i,
+  /fetch failed|failed to fetch/i,
+  /event stream closed/i,
+  /exceeded (60|20) minutes/i,
+  /socket hang up|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|UND_ERR|other side closed/i,
+  /network (error|failure)|networkerror/i,
+  /unable to access|Could not resolve host|Connection timed out|operation timed out|remote end hung up|RPC failed|early EOF|Failed to connect|transport error|TLS|SSL/i,
+];
+
+/**
+ * Pure classifier for a task run failure. Only transport/backend/worker errors
+ * are transient; anything unrecognised stays deterministic so the loop can never
+ * retry forever. Pause/cancel are handled by the caller before classification.
+ */
+export function classifyFailure(error: unknown): FailureKind {
+  const message = error instanceof Error ? error.message : String(error);
+  if (DETERMINISTIC_FAILURES.some((pattern) => pattern.test(message))) return "deterministic";
+  if (TRANSIENT_FAILURES.some((pattern) => pattern.test(message))) return "transient";
+  return "deterministic";
+}
+
 async function checks(task: Task, cwd: string, output: OutputSink): Promise<void> {
   for (const command of task.checks) {
     output(`Check: ${command}\n`);
@@ -145,8 +193,11 @@ export async function runTask(board: TaskBoard, id: string, execute: Worker = wo
     if (await gitAsync(attempt.worktree, "status", "--porcelain")) throw new Error("Worktree changed during commit; inspect before retrying");
     const result = await gitAsync(attempt.worktree, "rev-parse", "HEAD");
     if (await gitAsync(attempt.worktree, "rev-parse", "HEAD^{tree}") !== tree) throw new Error("Commit hooks changed validated content");
+    const retries = board.get(id).consecutiveFailures ?? 0;
     board.update(id, (t) => {
-      t.status = "completed"; t.detail = "Checks passed";
+      t.status = "completed";
+      t.detail = retries ? `Checks passed after ${retries} ${retries === 1 ? "retry" : "retries"}` : "Checks passed";
+      t.consecutiveFailures = undefined;
       Object.assign(t.attempts.at(-1)!, { result, checkedTree: tree, checkedAt: new Date().toISOString() });
     });
   } catch (error) {
@@ -160,7 +211,32 @@ export async function runTask(board: TaskBoard, id: string, execute: Worker = wo
       board.update(id, (t) => { t.status = "cancelled"; t.requestedAction = undefined; t.detail = "Cancelled"; });
       return;
     }
-    if (current.attempts.length > previousAttempts) board.update(id, (t) => { t.status = "blocked"; t.detail = String(error); });
+    // A failure before the attempt was recorded already leaves the task `new`, so
+    // the dispatcher re-picks it; only post-provision failures can loop here.
+    if (current.attempts.length > previousAttempts) {
+      const reason = String(error);
+      if (classifyFailure(error) === "transient") {
+        const failures = (current.consecutiveFailures ?? 0) + 1;
+        if (failures <= TRANSIENT_RETRY_BUDGET) {
+          // Re-queue and rethrow: the dispatcher logs the error and re-dispatches
+          // the task on its next tick, without a human in the loop.
+          board.update(id, (t) => {
+            t.status = "new";
+            t.mergeBlocked = undefined;
+            t.consecutiveFailures = failures;
+            t.detail = `Transient failure (retry ${failures}/${TRANSIENT_RETRY_BUDGET}): ${reason}`;
+          });
+        } else {
+          board.update(id, (t) => {
+            t.status = "blocked";
+            t.consecutiveFailures = failures;
+            t.detail = `Transient failure after ${TRANSIENT_RETRY_BUDGET} retries; retry budget exhausted: ${reason}`;
+          });
+        }
+      } else {
+        board.update(id, (t) => { t.status = "blocked"; t.consecutiveFailures = undefined; t.detail = reason; });
+      }
+    }
     throw error;
   } finally { clearInterval(watcher); unlock(); }
 }
