@@ -75,7 +75,7 @@ function usage(): void {
 
 Usage:
   midas [options] [prompt...]
-  midas task [--cwd DIR] add CONTRACT.json | update ID CONTRACT.json | list | run ID | merge ID | cleanup ID
+  midas task [--cwd DIR] add CONTRACT.json | update ID CONTRACT.json | remove ID | list | run ID | merge ID | cleanup [ID]
   midas task dispatch [--once] [--concurrency N]   run the board autonomously
 
 Options:

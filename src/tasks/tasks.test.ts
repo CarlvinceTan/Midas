@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { Event } from "@opencode-ai/sdk";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { TaskBoard, git, scopesOverlap } from "./board.ts";
-import { runTask, mergeTask, cleanupTask, revisionNotice } from "./runner.ts";
+import { runTask, mergeTask, cleanupTask, removeTask, revisionNotice } from "./runner.ts";
 import { TaskDispatcher, defaultTaskConcurrency } from "./dispatcher.ts";
 import { taskCli, appendDispatchLog, boardDrained } from "./cli.ts";
 import { pathToFileURL } from "node:url";
@@ -555,6 +555,52 @@ test("task updates require a live dispatcher lease", async (t) => {
   writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, heartbeat: Date.now() }));
   await quiet(() => taskCli(["--cwd", cwd, "update", task.id, contractPath]));
   assert.equal(board.get(task.id).revision, 2);
+});
+
+test("removing a task refuses dependents and never collides with an existing id", (t) => {
+  const { board } = fixture(t);
+  const a = board.add(contract); // T1
+  const b = board.add(contract); // T2
+  board.remove(a.id);
+  // The next add must clear the highest existing id, not reuse T2.
+  const c = board.add(contract);
+  assert.equal(c.id, "T3");
+  // A task others depend on cannot be removed.
+  const dependent = board.add({ ...contract, dependencies: [c.id] }); // T4
+  assert.throws(() => board.remove(c.id), /depends on/);
+  assert.equal(board.read().tasks.length, 3);
+  // A running task cannot be removed.
+  board.update(dependent.id, (t) => { t.status = "running"; });
+  assert.throws(() => board.remove(dependent.id), /running/);
+});
+
+test("removeTask cleans worktrees then deletes the task", async (t) => {
+  const { board } = fixture(t);
+  const task = board.add(contract);
+  await runTask(board, task.id, async (_, attempt) => writeFileSync(join(attempt.worktree, "result.txt"), "done"));
+  const worktree = board.get(task.id).attempts[0]!.worktree;
+  assert.equal(existsSync(worktree), true);
+  const removed = await removeTask(board, task.id);
+  assert.equal(removed.id, task.id);
+  assert.equal(existsSync(worktree), false);
+  assert.equal(board.read().tasks.length, 0);
+});
+
+test("forced cleanup removes a cancelled task's worktree", async (t) => {
+  const { board } = fixture(t);
+  const task = board.add(contract);
+  await runTask(board, task.id, async (_, attempt) => writeFileSync(join(attempt.worktree, "result.txt"), "done"));
+  board.cancel(task.id);
+  const worktree = board.get(task.id).attempts[0]!.worktree;
+  await cleanupTask(board, task.id, true);
+  assert.equal(existsSync(worktree), false);
+  assert.equal(board.get(task.id).attempts[0]!.cleaned, true);
+});
+
+test("task removal requires a live dispatcher lease", async (t) => {
+  const { cwd, board } = fixture(t);
+  const task = board.add(contract);
+  await assert.rejects(quiet(() => taskCli(["--cwd", cwd, "remove", task.id])), /No active orchestrator/);
 });
 
 test("dragged screenshot paths become readable image attachments", (t) => {

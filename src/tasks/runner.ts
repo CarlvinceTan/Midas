@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { once } from "node:events";
 import type { Session } from "@opencode-ai/sdk";
 import { TaskBoard, gitAsync, type Task, type Attempt } from "./board.ts";
@@ -275,18 +276,30 @@ export async function mergeTask(board: TaskBoard, id: string, output: OutputSink
   } finally { releaseTask(); }
 }
 
-export async function cleanupTask(board: TaskBoard, id: string): Promise<void> {
+export async function cleanupTask(board: TaskBoard, id: string, force = false): Promise<void> {
   board.get(id);
   const unlock = board.lock(`task-${id}`);
   try {
     const task = board.get(id);
-    if (task.merge !== "merged") throw new Error("Only merged task worktrees can be cleaned automatically");
-    const attempt = task.attempts.at(-1)!;
-    if (attempt.cleaned) return;
-    if (await gitAsync(attempt.worktree, "rev-parse", "HEAD") !== attempt.result) throw new Error("Worktree HEAD changed after validation");
-    // The task is merged, so its worktree is disposable: force removal so ignored
-    // artifacts (node_modules, build output) do not leave it lingering forever.
-    await gitAsync(board.cwd, "worktree", "remove", "--force", attempt.worktree);
-    board.update(id, (t) => { t.attempts.at(-1)!.cleaned = true; });
+    if (task.status === "running") throw new Error("Cannot clean a running task's worktree");
+    if (!force && task.merge !== "merged") throw new Error("Only merged task worktrees can be cleaned automatically");
+    for (const attempt of task.attempts) {
+      if (attempt.cleaned) continue;
+      // A merged attempt must still point at its validated commit; a forced clean
+      // (cancelled/blocked/removing a task) removes whatever is in the worktree.
+      if (!force && attempt.result && await gitAsync(attempt.worktree, "rev-parse", "HEAD") !== attempt.result) {
+        throw new Error("Worktree HEAD changed after validation");
+      }
+      if (existsSync(attempt.worktree)) await gitAsync(board.cwd, "worktree", "remove", "--force", attempt.worktree);
+      board.update(id, (t) => { const stored = t.attempts.find((candidate) => candidate.id === attempt.id); if (stored) stored.cleaned = true; });
+    }
   } finally { unlock(); }
+}
+
+/** Clean a task's worktrees, then delete it from the board. */
+export async function removeTask(board: TaskBoard, id: string): Promise<Task> {
+  const task = board.get(id);
+  if (task.status === "running") throw new Error(`Task ${id} is running; cancel it first`);
+  await cleanupTask(board, id, true);
+  return board.remove(id);
 }

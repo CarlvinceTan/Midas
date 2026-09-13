@@ -1,7 +1,7 @@
 import { appendFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TaskBoard } from "./board.ts";
-import { runTask, mergeTask, cleanupTask, stdoutOutput } from "./runner.ts";
+import { runTask, mergeTask, cleanupTask, removeTask, stdoutOutput } from "./runner.ts";
 import { TaskDispatcher } from "./dispatcher.ts";
 
 const DISPATCH_LOG_LIMIT = 2_000;
@@ -34,7 +34,7 @@ export async function taskCli(args: string[]): Promise<void> {
   const [command, value, extra] = args;
   if (!command || command === "--help") {
     process.stdout.write(
-      "midas task [--cwd DIR] add CONTRACT.json | update ID CONTRACT.json | list | run ID | merge ID | cleanup ID\n" +
+      "midas task [--cwd DIR] add CONTRACT.json | update ID CONTRACT.json | remove ID | list | run ID | merge ID | cleanup [ID]\n" +
         "midas task [--cwd DIR] dispatch [--once] [--concurrency N]   run the board autonomously\n",
     );
     return;
@@ -81,8 +81,9 @@ export async function taskCli(args: string[]): Promise<void> {
     await dispatcher.drain();
     return;
   }
-  const arity = command === "list" ? 1 : command === "update" ? 3 : 2;
-  if (!["add", "update", "list", "run", "merge", "cleanup"].includes(command) || args.length !== arity) {
+  const arity = command === "list" || command === "cleanup" ? 1 : command === "update" ? 3 : 2;
+  if (!["add", "update", "remove", "list", "run", "merge", "cleanup"].includes(command)
+    || (command === "cleanup" ? args.length < 1 || args.length > 2 : args.length !== arity)) {
     throw new Error("Invalid task command; use midas task --help");
   }
   if (command === "add") {
@@ -95,8 +96,21 @@ export async function taskCli(args: string[]): Promise<void> {
     if (!board.hasActiveDispatcher()) throw new Error("No active orchestrator: enable /multitask before updating tasks.");
     process.stdout.write(JSON.stringify(board.edit(value!, JSON.parse(readFileSync(extra!, "utf8"))), null, 2) + "\n");
   }
+  if (command === "remove") {
+    if (!board.hasActiveDispatcher()) throw new Error("No active orchestrator: enable /multitask before removing tasks.");
+    const removed = await removeTask(board, value!);
+    process.stdout.write(`Removed ${removed.id}\n`);
+  }
   if (command === "list") process.stdout.write(JSON.stringify(board.read(), null, 2) + "\n");
   if (command === "run") await runTask(board, value!, undefined, undefined, { output: stdoutOutput });
   if (command === "merge") await mergeTask(board, value!, stdoutOutput);
-  if (command === "cleanup") await cleanupTask(board, value!);
+  if (command === "cleanup") {
+    // Explicit board maintenance: force-clean one task, or every settled task.
+    const ids = value
+      ? [value]
+      : board.read().tasks
+          .filter((task) => task.status !== "running")
+          .map((task) => task.id);
+    for (const id of ids) await cleanupTask(board, id, true);
+  }
 }

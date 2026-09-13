@@ -48,6 +48,7 @@ import { StatsView } from "./components/stats-view.ts";
 import { TasksView } from "./components/tasks-view.ts";
 import { TaskBoard, gitAsync } from "../tasks/board.ts";
 import { defaultTaskConcurrency } from "../tasks/dispatcher.ts";
+import { removeTask } from "../tasks/runner.ts";
 import { VoiceController, composeVoiceText, defaultVoiceCommand } from "../voice/stt.ts";
 import { SessionHeader, StartupHeader } from "./components/startup-header.ts";
 import { OptionPicker } from "./components/option-picker.ts";
@@ -3677,7 +3678,18 @@ export class MidasApp {
     const view = new TasksView(
       () => this.closeOverlay(),
       this.activeAgent === ORCHESTRATOR_AGENT,
-      { pause: (id) => control((b) => b.pause(id)), resume: (id) => control((b) => b.resume(id)), cancel: (id) => control((b) => b.cancel(id)) },
+      {
+        pause: (id) => control((b) => b.pause(id)),
+        resume: (id) => control((b) => b.resume(id)),
+        cancel: (id) => control((b) => b.cancel(id)),
+        // Removal also cleans worktrees, so it is async.
+        remove: (id) => {
+          if (!board) return;
+          void removeTask(board, id)
+            .catch((error) => this.flash(error instanceof Error ? error.message : String(error)))
+            .finally(() => this.tui.requestRender());
+        },
+      },
     );
     try { board = new TaskBoard(this.options.cwd); }
     catch { view.error = "Tasks require an existing Git repository. No repository was created."; }

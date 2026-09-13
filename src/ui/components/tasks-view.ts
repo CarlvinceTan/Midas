@@ -39,6 +39,7 @@ export interface TaskControls {
   pause(id: string): void;
   resume(id: string): void;
   cancel(id: string): void;
+  remove(id: string): void;
 }
 
 interface MenuAction {
@@ -61,7 +62,7 @@ export class TasksView implements Component {
   constructor(
     private onCancel: () => void,
     private multitask = false,
-    private controls: TaskControls = { pause: () => {}, resume: () => {}, cancel: () => {} },
+    private controls: TaskControls = { pause: () => {}, resume: () => {}, cancel: () => {}, remove: () => {} },
   ) {}
   invalidate(): void {}
   handleInput(data: string): void {
@@ -93,6 +94,7 @@ export class TasksView implements Component {
     if (task.status === "running" || task.status === "new") actions.push({ label: "Pause", run: () => this.controls.pause(task.id) });
     if (task.status === "paused" || task.status === "blocked") actions.push({ label: "Resume", run: () => this.controls.resume(task.id) });
     if (task.merge !== "merged" && task.status !== "completed" && task.status !== "cancelled") actions.push({ label: "Cancel", run: () => this.controls.cancel(task.id) });
+    if (task.status !== "running") actions.push({ label: "Remove", run: () => this.controls.remove(task.id) });
     actions.push({ label: "Show details", run: () => { this.details = !this.details; } });
     actions.push({ label: "Close", run: () => {} });
     this.menu = { taskId: task.id, actions, index: 0 };

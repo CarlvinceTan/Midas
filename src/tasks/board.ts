@@ -224,8 +224,10 @@ export class TaskBoard {
     const target = this.currentBranch();
     return this.mutate((board) => {
       for (const id of c.dependencies ?? []) if (!board.tasks.some((t) => t.id === id)) throw new Error(`Unknown dependency: ${id}`);
+      // Ids are monotonic: removing a task must never let a later add reuse its id.
+      const next = board.tasks.reduce((max, task) => Math.max(max, Number(task.id.slice(1)) || 0), 0) + 1;
       const task: Task = { title: c.title, instructions: c.instructions, checks: [...c.checks], group: c.group,
-        dependencies: [...(c.dependencies ?? [])], scope: c.scope ? [...c.scope] : undefined, id: `T${board.tasks.length + 1}`,
+        dependencies: [...(c.dependencies ?? [])], scope: c.scope ? [...c.scope] : undefined, id: `T${next}`,
         status: "new", merge: "not-merged", target, attempts: [], revision: 1 };
       board.tasks.push(task);
       return task;
@@ -299,6 +301,23 @@ export class TaskBoard {
       if (task.merge === "merged") throw new Error(`Task ${id} is already merged`);
       if (task.status === "running") { task.requestedAction = "cancel"; task.detail = "Cancel requested"; }
       else { task.status = "cancelled"; task.detail = "Cancelled"; }
+      return task;
+    });
+  }
+  /**
+   * Delete a task from the board. Refuses while it is running or while another
+   * task still depends on it, so the dependency graph never dangles. Callers
+   * should clean the task's worktrees first (see `removeTask`).
+   */
+  remove(id: string): Task {
+    return this.mutate((board) => {
+      const index = board.tasks.findIndex((task) => task.id === id);
+      if (index < 0) throw new Error(`Unknown task: ${id}`);
+      const task = board.tasks[index]!;
+      if (task.status === "running") throw new Error(`Task ${id} is running; cancel it first`);
+      const dependent = board.tasks.find((other) => other.id !== id && (other.dependencies ?? []).includes(id));
+      if (dependent) throw new Error(`Task ${dependent.id} depends on ${id}; remove or edit it first`);
+      board.tasks.splice(index, 1);
       return task;
     });
   }

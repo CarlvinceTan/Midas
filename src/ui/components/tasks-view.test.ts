@@ -223,7 +223,8 @@ test("details toggle keeps a stable height across selections", () => {
     selectRow(view, selected);
     view.handleInput("\r"); // open the actions menu
     view.handleInput("\x1b[B");
-    view.handleInput("\x1b[B"); // Pause -> Cancel -> Show details
+    view.handleInput("\x1b[B");
+    view.handleInput("\x1b[B"); // Pause -> Cancel -> Remove -> Show details
     view.handleInput("\r"); // invoke Show details
     const lines = view.render(160);
     assert.ok(lines.some((line) => line.includes("Worktree:")), `details missing for index ${selected}`);
@@ -233,7 +234,7 @@ test("details toggle keeps a stable height across selections", () => {
 });
 
 test("Enter opens an actions menu scoped to the task status", () => {
-  const view = new TasksView(() => {}, false, { pause: () => {}, resume: () => {}, cancel: () => {} });
+  const view = new TasksView(() => {}, false, { pause: () => {}, resume: () => {}, cancel: () => {}, remove: () => {} });
   view.tasks = [task({ id: "T1", status: "running" }), task({ id: "T2", status: "paused" })];
   view.handleInput("\r");
   let text = stripAnsi(view.render(160).join("\n"));
@@ -241,17 +242,19 @@ test("Enter opens an actions menu scoped to the task status", () => {
   assert.match(text, /Pause/);
   assert.match(text, /Cancel/);
   assert.doesNotMatch(text, /Resume/);
+  assert.doesNotMatch(text, /Remove/, "a running task cannot be removed");
   view.handleInput("\x1b"); // close the menu
   selectRow(view, 1);
   view.handleInput("\r");
   text = stripAnsi(view.render(160).join("\n"));
   assert.match(text, /Resume/);
+  assert.match(text, /Remove/);
   assert.doesNotMatch(text, /Pause/);
 });
 
 test("menu navigation stays in the menu and Esc closes only the menu", () => {
   const paused: string[] = [];
-  const view = new TasksView(() => { throw new Error("overlay closed"); }, false, { pause: (id) => paused.push(id), resume: () => {}, cancel: () => {} });
+  const view = new TasksView(() => { throw new Error("overlay closed"); }, false, { pause: (id) => paused.push(id), resume: () => {}, cancel: () => {}, remove: () => {} });
   view.tasks = [task({ id: "T1", status: "running" }), task({ id: "T2", status: "running" })];
   view.handleInput("\r"); // menu on T1
   view.handleInput("\x1b[B"); // Pause -> Cancel
