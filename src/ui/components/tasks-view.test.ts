@@ -29,6 +29,12 @@ function renderRow(overrides: Partial<Task>): string {
   return view.render(160).join("\n");
 }
 
+/** Last SGR code before `index` that sets a colour/attribute, ignoring resets. */
+function activeColor(text: string, index: number): string {
+  const codes = [...text.slice(0, index).matchAll(/\x1b\[[0-9;]*m/g)].map((match) => match[0]);
+  return codes.reverse().find((code) => code !== "\x1b[0m" && code !== "\x1b[39m" && code !== "\x1b[22m" && code !== "\x1b[49m") ?? "";
+}
+
 /** 12 tasks spread across 5 groups plus one distinct worktree branch each. */
 function multiGroupTasks(): Task[] {
   const groups = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"];
@@ -72,6 +78,27 @@ test("running rows paint a spinner frame blue", () => {
 test("blocked rows paint the cross red", () => {
   const line = renderRow({ status: "blocked" });
   assert.ok(line.includes(theme().fg("error", "✗")), `missing red cross: ${line}`);
+});
+
+test("keeps the full status and ellipsises the title in its own colour", () => {
+  const title = "Implement a very long feature that will not fit in a narrow panel";
+  const view = new TasksView(() => {});
+  view.tasks = [task({ title, status: "completed", merge: "merged", target: "midas/integration" })];
+  const status = theme().fg("muted", "⤵ merged → midas/integration");
+  const titleColor = theme().getFgAnsi("text");
+
+  const narrow = view.render(48).find((line) => line.includes("T1"))!;
+  assert.ok(narrow.includes(status), `status was clipped: ${narrow}`);
+  const ellipsis = narrow.indexOf("…");
+  assert.ok(ellipsis > 0, `title was not ellipsised: ${narrow}`);
+  const colorAt = narrow.indexOf(titleColor);
+  assert.ok(colorAt >= 0, `title was not styled: ${narrow}`);
+  assert.equal(activeColor(narrow, colorAt + titleColor.length), titleColor, `visible title lost its colour: ${narrow}`);
+  assert.equal(activeColor(narrow, ellipsis), titleColor, `ellipsis is not in the title colour: ${narrow}`);
+  assert.notEqual(activeColor(narrow, ellipsis), theme().getFgAnsi("muted"), `status colour bled onto the ellipsis: ${narrow}`);
+
+  const wide = view.render(160).find((line) => line.includes("T1"))!;
+  assert.ok(wide.includes(title), `full title missing at a wide width: ${wide}`);
 });
 
 test("panel height is stable while the selection moves in both modes", () => {
