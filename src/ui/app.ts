@@ -39,7 +39,7 @@ import { FooterComponent, formatCwdForFooter, type FooterData } from "./componen
 import { Toast } from "./components/toast.ts";
 import { PermissionDialog, type PermissionResponse } from "./components/permission-dialog.ts";
 import { QuestionDialog } from "./components/question-dialog.ts";
-import { ModelPicker, modelDisplayLabel } from "./components/model-picker.ts";
+import { ModelPicker, modelDisplayLabel, modelDisplayParts } from "./components/model-picker.ts";
 import { ThinkingPicker } from "./components/thinking-picker.ts";
 import { SessionsView } from "./components/sessions-view.ts";
 import { AGENT_LABELS, loadAgentSessions, readAgentTranscript, type AgentSession } from "../lib/agent-sessions.ts";
@@ -2756,11 +2756,17 @@ export class MidasApp {
         ? "Last Used"
         : `Default (${agentCallerLabel(this.agentCatalog, agent.name) ?? entryLabels})`;
       const thinking = override ? this.thinkingForAgent(agent.name, override) : undefined;
+      // A specific model reads "Name · level Provider", with the provider dimmer.
+      let currentValue = fallback;
+      if (override) {
+        const parts = modelDisplayParts(override);
+        const provider = parts.provider ? ` ${theme().fg("dim", parts.provider)}` : "";
+        currentValue = `${parts.name} · ${thinking}${provider}`;
+      }
       return {
         id: `agent:${agent.name}`,
         label,
-        // A specific model shows its reasoning level; inherited defaults stay terse.
-        currentValue: override ? `${modelDisplayLabel(override)}${thinking ? ` · ${thinking}` : ""}` : fallback,
+        currentValue,
         group,
         submenu: (_current: string, done: (value?: string) => void) => {
           // The first choice clears any per-agent override: entry agents fall
