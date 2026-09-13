@@ -13,11 +13,19 @@ export interface StoredBash {
   at: number;
 }
 
+/** A queued follow-up retained so an exited session's queue survives a resume. */
+export interface StoredQueuedPrompt {
+  text: string;
+  attachments?: Array<{ mime: string; filename: string; url: string }>;
+}
+
 /** Client-side session state that opencode does not persist for us. */
 export interface StoredSessionState {
   /** Working directory the session was left in (may differ from its origin). */
   cwd?: string;
   bash?: StoredBash[];
+  /** Follow-ups still waiting when the session was last exited. */
+  queue?: StoredQueuedPrompt[];
 }
 
 interface SessionStateRecord extends StoredSessionState {
@@ -29,6 +37,8 @@ type Store = Record<string, SessionStateRecord>;
 const MAX_SESSIONS = 100;
 const MAX_BASH = 200;
 const MAX_OUTPUT = 100_000;
+const MAX_QUEUE = 50;
+const MAX_ATTACHMENT_URL = 1_500_000;
 
 export function sessionStatePath(): string {
   return join(midasConfigDir(), "session-state.json");
@@ -60,6 +70,7 @@ export function readSessionState(sessionId: string | undefined): StoredSessionSt
   return {
     ...(typeof entry.cwd === "string" ? { cwd: entry.cwd } : {}),
     ...(Array.isArray(entry.bash) ? { bash: entry.bash } : {}),
+    ...(Array.isArray(entry.queue) ? { queue: entry.queue } : {}),
   };
 }
 
@@ -70,7 +81,15 @@ export function writeSessionState(sessionId: string | undefined, state: StoredSe
     ...entry,
     output: entry.output.length > MAX_OUTPUT ? entry.output.slice(-MAX_OUTPUT) : entry.output,
   }));
-  if (!state.cwd && (!bash || bash.length === 0)) {
+  // Keep the queue bounded; oversized inline attachments are dropped so an
+  // image-heavy queue cannot bloat the state file (the text is still kept).
+  const queue = state.queue?.slice(-MAX_QUEUE).map((item) => ({
+    text: item.text,
+    ...(item.attachments
+      ? { attachments: item.attachments.filter((attachment) => attachment.url.length <= MAX_ATTACHMENT_URL) }
+      : {}),
+  }));
+  if (!state.cwd && (!bash || bash.length === 0) && (!queue || queue.length === 0)) {
     if (!(sessionId in store)) return;
     delete store[sessionId];
   } else {
@@ -78,6 +97,7 @@ export function writeSessionState(sessionId: string | undefined, state: StoredSe
     store[sessionId] = {
       ...(state.cwd ? { cwd: state.cwd } : {}),
       ...(bash && bash.length > 0 ? { bash } : {}),
+      ...(queue && queue.length > 0 ? { queue } : {}),
       updatedAt: Math.max(Date.now(), newest + 1),
     };
   }

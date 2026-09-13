@@ -55,3 +55,28 @@ test("`!` history is capped to the most recent entries", () => {
     assert.ok(sessionStatePath().endsWith("session-state.json"));
   });
 });
+
+test("session state round-trips the queued follow-ups", () => {
+  withTempConfigDir(() => {
+    const queue = [
+      { text: "first", attachments: [] },
+      { text: "second", attachments: [{ mime: "image/png", filename: "s.png", url: "data:image/png;base64,AAAA" }] },
+    ];
+    writeSessionState("ses_a", { queue });
+    assert.deepEqual(readSessionState("ses_a")?.queue, queue);
+  });
+});
+
+test("a queue on its own persists, is capped, and drops oversized attachments", () => {
+  withTempConfigDir(() => {
+    writeSessionState("ses_a", { queue: Array.from({ length: 80 }, (_, i) => ({ text: `q${i}`, attachments: [] })) });
+    const stored = readSessionState("ses_a")!.queue!;
+    assert.equal(stored.length, 50);
+    assert.equal(stored[0]!.text, "q30");
+    assert.equal(stored[49]!.text, "q79");
+    writeSessionState("ses_b", { queue: [{ text: "big", attachments: [{ mime: "image/png", filename: "b.png", url: "x".repeat(1_500_001) }] }] });
+    const big = readSessionState("ses_b")!.queue![0]!;
+    assert.equal(big.text, "big");
+    assert.deepEqual(big.attachments, []);
+  });
+});

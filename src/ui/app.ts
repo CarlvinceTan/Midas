@@ -1743,9 +1743,9 @@ export class MidasApp {
     this.tui.requestRender();
   }
 
-  /** Persist the active session's working directory and `!` history. */
+  /** Persist the active session's working directory, `!` history and queue. */
   private persistSessionState(): void {
-    writeSessionState(this.options.controller.id, { cwd: this.options.cwd, bash: this.sessionBash });
+    writeSessionState(this.options.controller.id, { cwd: this.options.cwd, bash: this.sessionBash, queue: this.queue });
     this.recordMidasSession();
   }
 
@@ -1769,6 +1769,8 @@ export class MidasApp {
   private async restoreSessionShellState(sessionId: string | undefined, fallbackCwd?: string): Promise<void> {
     const state = readSessionState(sessionId);
     this.sessionBash = state?.bash ?? [];
+    // Follow-ups that were still queued when the session was exited come back.
+    this.queue = (state?.queue ?? []).map((item) => ({ text: item.text, attachments: item.attachments ?? [] }));
     const target = directoryExists(state?.cwd) ? state.cwd : fallbackCwd;
     if (target && target !== this.options.cwd && directoryExists(target)) {
       await this.changeDirectory(target);
@@ -1864,6 +1866,7 @@ export class MidasApp {
   /** Append to the follow-up queue and repaint its preview above the input. */
   private enqueue(prompt: QueuedPrompt): void {
     this.queue.push(prompt);
+    this.persistSessionState();
     this.tui.requestRender();
   }
 
@@ -1871,6 +1874,7 @@ export class MidasApp {
   private enqueueAt(index: number, prompt: QueuedPrompt): void {
     const at = Math.max(0, Math.min(index, this.queue.length));
     this.queue.splice(at, 0, prompt);
+    this.persistSessionState();
     this.tui.requestRender();
   }
 
@@ -1881,6 +1885,7 @@ export class MidasApp {
     if (!item) return;
     this.queue.splice(index, 1);
     this.editingQueue = { index, prompt: item };
+    this.persistSessionState();
     this.editor.setText(item.text);
     this.tui.setFocus(this.editor);
     this.tui.requestRender();
@@ -2114,6 +2119,7 @@ export class MidasApp {
       this.queueDispatchedAt = -1;
       return;
     }
+    this.persistSessionState();
     this.queueDispatchedAt = this.userMessageCount();
     this.tui.requestRender();
     const shell = this.shellCommand(next.text);
@@ -2952,6 +2958,7 @@ export class MidasApp {
       // interactive agent; the user explicitly enables the orchestrator again.
       this.setActiveAgent(DEFAULT_AGENT);
       this.sessionBash = [];
+      this.queue = [];
       this.restoreDraft(this.options.controller.id);
       this.transcriptView.reset();
       this.resetTitle();
