@@ -1,6 +1,7 @@
 import { BashExecutionComponent } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { BashView } from "../../state/transcript.ts";
+import { markRenderedLines } from "../../lib/ansi.ts";
 
 /**
  * Wraps pi's real BashExecutionComponent so `!` shell output looks identical to
@@ -22,7 +23,7 @@ export class BashBox implements Component {
 
   render(width: number): string[] {
     this.sync();
-    return this.impl.render(width);
+    return markRenderedLines(this.impl.render(width));
   }
 
   private sync(): void {

@@ -69,6 +69,38 @@ export function markContent(text: string): string {
   return CONTENT_START + text + CONTENT_END;
 }
 
+/** Zero-width ANSI/OSC sequences: SGR/CSI and OSC (pi shell-integration marks). */
+const ESCAPE = /\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+
+/**
+ * Wrap already-rendered lines (e.g. from a pi component that does not emit its
+ * own bounds) so drag-selection excludes leading/trailing padding. Existing
+ * content bounds and decoration lines are left untouched.
+ */
+export function markRenderedLines(lines: string[]): string[] {
+  return lines.map((line) => {
+    if (line.includes(CONTENT_START) || line.includes(DECORATION)) return line;
+    let first = -1;
+    let last = -1;
+    let index = 0;
+    while (index < line.length) {
+      ESCAPE.lastIndex = index;
+      const match = ESCAPE.exec(line);
+      if (match && match.index === index) {
+        index += match[0].length;
+        continue;
+      }
+      if (line[index] !== " ") {
+        if (first < 0) first = index;
+        last = index;
+      }
+      index += 1;
+    }
+    if (first < 0) return line; // Whitespace/zero-width only: nothing to select.
+    return line.slice(0, first) + CONTENT_START + line.slice(first, last + 1) + CONTENT_END + line.slice(last + 1);
+  });
+}
+
 /** Lines containing this marker are skipped when a selection is copied. */
 export const DECORATION = "\x1b]777;pi-decoration\x07";
 

@@ -72,6 +72,8 @@ export interface PiSettings {
   hideThinkingBlock?: boolean;
   /** Max concurrent board task agents; defaults to a machine-tuned value. */
   taskConcurrency?: number;
+  /** Command whose stdout streams JSONL STT events for `/voice`. */
+  voiceSttCommand?: string;
   [key: string]: unknown;
 }
 

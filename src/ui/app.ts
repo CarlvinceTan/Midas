@@ -48,6 +48,7 @@ import { StatsView } from "./components/stats-view.ts";
 import { TasksView } from "./components/tasks-view.ts";
 import { TaskBoard, gitAsync } from "../tasks/board.ts";
 import { defaultTaskConcurrency } from "../tasks/dispatcher.ts";
+import { VoiceController, composeVoiceText, defaultVoiceCommand } from "../voice/stt.ts";
 import { SessionHeader, StartupHeader } from "./components/startup-header.ts";
 import { OptionPicker } from "./components/option-picker.ts";
 import { PromptDialog } from "./components/prompt-dialog.ts";
@@ -591,6 +592,7 @@ export class MidasApp {
   private activeAgent = DEFAULT_AGENT;
   /** True while `/voice` microphone dictation streams into the input. */
   private voiceActive = false;
+  private voiceBase = "";
   /**
    * Speech-to-text backend seam. A later task wires the real controller; with
    * no controller installed the mode still toggles and repaints cleanly.
@@ -1554,14 +1556,34 @@ export class MidasApp {
    */
   private setVoiceActive(active: boolean): void {
     this.voiceActive = active;
-    if (active) this.voiceController?.start();
-    else this.voiceController?.stop();
+    if (active) {
+      // Keep whatever was typed before voice as a prefix for the transcript.
+      this.voiceBase = this.editor.getText();
+      this.voiceController ??= this.createVoiceController();
+      this.voiceController.start();
+    } else {
+      this.voiceController?.stop();
+    }
     this.applyEditorBorderColor();
     this.mountEditor();
     this.options.controller.transcript.addNotice(
       active ? "Voice listening — speak to dictate. Esc to exit." : "Voice dictation off.",
     );
     this.tui.requestRender();
+  }
+
+  private createVoiceController(): VoiceController {
+    const configured = this.options.settings.voiceSttCommand;
+    const command = typeof configured === "string" && configured.trim() ? configured.trim() : undefined;
+    const spec = command ? { command: "/bin/bash", args: ["-lc", command] } : defaultVoiceCommand();
+    return new VoiceController({
+      ...spec,
+      onText: (committed, partial) => this.applyVoiceTranscript(composeVoiceText(this.voiceBase, committed, partial), ""),
+      onError: (message) => {
+        this.options.controller.transcript.addNotice(`Voice: ${message}`);
+        this.setVoiceActive(false);
+      },
+    });
   }
 
   /**
@@ -3739,6 +3761,7 @@ export class MidasApp {
     this.saveDraftNow();
     this.persistSessionState();
     // The board daemon is detached on purpose; quitting must not kill it.
+    this.voiceController?.stop();
     if (this.tasksTimer) clearInterval(this.tasksTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
     if (this.timer) clearInterval(this.timer);

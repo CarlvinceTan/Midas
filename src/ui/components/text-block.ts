@@ -1,6 +1,7 @@
 import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import type { TextView } from "../../state/transcript.ts";
+import { markRenderedLines } from "../../lib/ansi.ts";
 import { normalizeHeadingDepth } from "../../lib/markdown.ts";
 import { getMarkdownTheme } from "../../theme/theme.ts";
 
@@ -52,7 +53,7 @@ export class TextBlock implements Component {
       this.pad,
       [normalizeHeadingDepth],
     );
-    this.cache = component.render(width);
+    this.cache = markRenderedLines(component.render(width));
     this.cacheKey = key;
     return this.cache;
   }

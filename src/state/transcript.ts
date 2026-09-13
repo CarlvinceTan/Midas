@@ -93,6 +93,23 @@ export interface QuestionView {
   questions: QuestionPrompt[];
 }
 
+/**
+ * Provider/API failures often surface as a bare URL-connection error
+ * ("Unable to connect. Is the computer able to access the url?") that hides the
+ * cause. When the failure looks like a network/DNS problem, name it so the user
+ * checks their internet rather than the model or the API key.
+ */
+export function formatApiError(message: string): string {
+  if (
+    /cannot connect to api|unable to connect|fetch failed|enotfound|eai_again|getaddrinfo|network is unreachable|network error|econnrefused|econnreset|etimedout|socket hang up/i.test(
+      message,
+    )
+  ) {
+    return "No internet connection: couldn't reach the model API. Check your network and try again.";
+  }
+  return message;
+}
+
 function toMessageView(info: Message): MessageView {
   if (info.role === "assistant") {
     const a = info as AssistantMessage;
@@ -112,7 +129,9 @@ function toMessageView(info: Message): MessageView {
       },
       created: a.time?.created,
       completed: a.time?.completed,
-      error: a.error ? ((a.error as { data?: { message?: string } }).data?.message ?? a.error.name) : undefined,
+      error: a.error
+        ? formatApiError((a.error as { data?: { message?: string } }).data?.message ?? a.error.name)
+        : undefined,
       parts: [],
     };
   }

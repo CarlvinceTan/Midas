@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { Message, Part } from "@opencode-ai/sdk";
-import { Transcript, type MessageView } from "./transcript.ts";
+import { Transcript, formatApiError, type MessageView } from "./transcript.ts";
 
 const assistant = (id: string): Message =>
   ({ id, role: "assistant", sessionID: "ses", mode: "task", time: { created: 1 }, tokens: {}, cost: 0 }) as unknown as Message;
