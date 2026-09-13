@@ -546,6 +546,8 @@ class NoHintList implements Component {
 interface QueuedPrompt {
   text: string;
   attachments: PromptAttachment[];
+  /** Editor chips (marker -> path) so editing the queue restores them yellow. */
+  chips?: Array<{ marker: string; path: string }>;
 }
 
 export class MidasApp {
@@ -1082,11 +1084,9 @@ export class MidasApp {
 
   private contextPaths(): string[] {
     const candidates = [
+      join(midasConfigDir(), "AGENTS.md"),
       join(midasProjectDir(this.options.cwd), "AGENTS.md"),
       join(agentsProjectDir(this.options.cwd), "AGENTS.md"),
-      join(midasConfigDir(), "AGENTS.md"),
-      join(agentsGlobalDir(), "AGENTS.md"),
-      join(this.options.cwd, "AGENTS.md"),
     ];
     const seen = new Set<string>();
     const result: string[] = [];
@@ -1816,7 +1816,7 @@ export class MidasApp {
     const state = readSessionState(sessionId);
     this.sessionBash = state?.bash ?? [];
     // Follow-ups that were still queued when the session was exited come back.
-    this.queue = (state?.queue ?? []).map((item) => ({ text: item.text, attachments: item.attachments ?? [] }));
+    this.queue = (state?.queue ?? []).map((item) => ({ text: item.text, attachments: item.attachments ?? [], chips: item.chips }));
     const target = directoryExists(state?.cwd) ? state.cwd : fallbackCwd;
     if (target && target !== this.options.cwd && directoryExists(target)) {
       await this.changeDirectory(target);
@@ -1933,6 +1933,8 @@ export class MidasApp {
     this.editingQueue = { index, prompt: item };
     this.persistSessionState();
     this.editor.setText(item.text);
+    // Restore the yellow image chips so they stay atomic and deletable.
+    if (item.chips?.length) this.editor.setImageAttachments(item.chips);
     this.tui.setFocus(this.editor);
     this.tui.requestRender();
   }
@@ -1989,7 +1991,7 @@ export class MidasApp {
       }
     }
     if (missing.length > 0) this.fail(`Couldn't read image: ${missing.join(", ")}`);
-    return { text: body.replace(/[ \t]{2,}/g, " ").trim(), attachments };
+    return { text: body.replace(/[ \t]{2,}/g, " ").trim(), attachments, chips: chips.filter((chip) => body.includes(chip.marker)) };
   }
 
   /** Run a `!` shell command locally with a persistent working directory. */

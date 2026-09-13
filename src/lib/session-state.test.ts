@@ -60,7 +60,7 @@ test("session state round-trips the queued follow-ups", () => {
   withTempConfigDir(() => {
     const queue = [
       { text: "first", attachments: [] },
-      { text: "second", attachments: [{ mime: "image/png", filename: "s.png", url: "data:image/png;base64,AAAA" }] },
+      { text: "second", attachments: [{ mime: "image/png", filename: "s.png", url: "data:image/png;base64,AAAA" }], chips: [{ marker: "[Image: s.png]", path: "/tmp/s.png" }] },
     ];
     writeSessionState("ses_a", { queue });
     assert.deepEqual(readSessionState("ses_a")?.queue, queue);

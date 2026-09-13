@@ -17,6 +17,8 @@ export interface StoredBash {
 export interface StoredQueuedPrompt {
   text: string;
   attachments?: Array<{ mime: string; filename: string; url: string }>;
+  /** Editor image chips (marker -> path) so an edited queue keeps them atomic. */
+  chips?: Array<{ marker: string; path: string }>;
 }
 
 /** Client-side session state that opencode does not persist for us. */
@@ -88,6 +90,7 @@ export function writeSessionState(sessionId: string | undefined, state: StoredSe
     ...(item.attachments
       ? { attachments: item.attachments.filter((attachment) => attachment.url.length <= MAX_ATTACHMENT_URL) }
       : {}),
+    ...(item.chips && item.chips.length > 0 ? { chips: item.chips } : {}),
   }));
   if (!state.cwd && (!bash || bash.length === 0) && (!queue || queue.length === 0)) {
     if (!(sessionId in store)) return;
