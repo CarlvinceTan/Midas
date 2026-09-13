@@ -1,7 +1,27 @@
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { TaskBoard } from "./board.ts";
 import { runTask, mergeTask, cleanupTask } from "./runner.ts";
 import { TaskDispatcher } from "./dispatcher.ts";
+
+const DISPATCH_LOG_LIMIT = 2_000;
+
+/** Append one dispatcher event to the per-repo log, capped to the last N lines. */
+export function appendDispatchLog(directory: string, message: string): void {
+  const path = join(directory, "dispatch.log");
+  appendFileSync(path, `${new Date().toISOString()} ${message}\n`);
+  try {
+    if (statSync(path).size > DISPATCH_LOG_LIMIT * 120) {
+      const lines = readFileSync(path, "utf8").split("\n");
+      writeFileSync(path, lines.slice(-DISPATCH_LOG_LIMIT).join("\n"));
+    }
+  } catch { /* best effort */ }
+}
+
+/** True once every task is merged or cancelled (nothing left for the daemon). */
+export function boardDrained(board: TaskBoard): boolean {
+  return board.read().tasks.every((task) => task.merge === "merged" || task.status === "cancelled");
+}
 
 export async function taskCli(args: string[]): Promise<void> {
   const cwdIndex = args.indexOf("--cwd");
@@ -27,16 +47,34 @@ export async function taskCli(args: string[]): Promise<void> {
       concurrency = Number(args[concurrencyIndex + 1]);
       if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("--concurrency requires a positive integer");
     }
-    const dispatcher = new TaskDispatcher(board, { concurrency, onEvent: (message) => process.stdout.write(`${message}\n`) });
-    await dispatcher.start();
+    const log = (message: string): void => { process.stdout.write(`${message}\n`); appendDispatchLog(board.directory, message); };
+    const dispatcher = new TaskDispatcher(board, { concurrency, onEvent: log });
+    try {
+      await dispatcher.start();
+    } catch (error) {
+      // Another session already leads; a duplicate daemon exits quietly.
+      if (/already running/.test(String(error))) return;
+      throw error;
+    }
     process.stdout.write("Dispatcher running. Press Ctrl+C to stop.\n");
     if (args.includes("--once")) {
       await dispatcher.drain();
       dispatcher.stop();
       return;
     }
+    // Detached daemons use `--until-drained` to clean themselves up after the
+    // board finishes; a foreground `dispatch` keeps running until interrupted.
+    let idle: ReturnType<typeof setInterval> | undefined;
+    if (args.includes("--until-drained")) {
+      let idleTicks = 0;
+      idle = setInterval(() => {
+        if (dispatcher.running === 0 && boardDrained(board)) idleTicks += 1;
+        else idleTicks = 0;
+        if (idleTicks >= 60) { clearInterval(idle); dispatcher.stop(); }
+      }, 5000);
+    }
     await new Promise<void>((resolve) => {
-      const stop = (): void => { dispatcher.stop(); resolve(); };
+      const stop = (): void => { if (idle) clearInterval(idle); dispatcher.stop(); resolve(); };
       process.once("SIGINT", stop);
       process.once("SIGTERM", stop);
     });

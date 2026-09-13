@@ -22,9 +22,10 @@ import {
   type ViewportTUI,
 } from "@earendil-works/pi-tui";
 import { copyToClipboard, initTheme as initPiTheme } from "@earendil-works/pi-coding-agent";
-import { existsSync, statSync, unwatchFile, watchFile } from "node:fs";
+import { existsSync, readFileSync, statSync, unwatchFile, watchFile } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, basename, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { findImagePaths, readImageAttachment, type PromptAttachment } from "../lib/attachments.ts";
 import type { AgentChoice, AuthMethod, AuthPrompt, CommandChoice, SessionController, ModelChoice } from "../opencode/session.ts";
 import { loadCachedAgentStats, readAgentStats, refreshAgentStats } from "../opencode/agent-stats.ts";
@@ -46,7 +47,7 @@ import { upsertMidasSession } from "../lib/session-store.ts";
 import { StatsView } from "./components/stats-view.ts";
 import { TasksView } from "./components/tasks-view.ts";
 import { TaskBoard, gitAsync } from "../tasks/board.ts";
-import { defaultTaskConcurrency, TaskDispatcher } from "../tasks/dispatcher.ts";
+import { defaultTaskConcurrency } from "../tasks/dispatcher.ts";
 import { SessionHeader, StartupHeader } from "./components/startup-header.ts";
 import { OptionPicker } from "./components/option-picker.ts";
 import { PromptDialog } from "./components/prompt-dialog.ts";
@@ -1958,8 +1959,9 @@ export class MidasApp {
     this.options.controller.setCwd(dir);
     this.options.controller.transcript.addRecord(`Directory: ${dir}`);
     // The board is repo-scoped; re-elect for the new directory.
-    this.dispatcher?.stop();
-    this.dispatcher = undefined;
+    if (this.dispatchLogTimer) clearInterval(this.dispatchLogTimer);
+    this.dispatchLogTimer = undefined;
+    this.dispatchLogOffset = 0;
     await this.reloadForDirectory();
     this.syncDispatcher();
     void this.refreshBranch();
@@ -3530,44 +3532,64 @@ export class MidasApp {
 
   /** Mount a dialog in the editor dock (bottom, full width) like pi. */
   private tasksTimer?: ReturnType<typeof setInterval>;
-  private dispatcher?: TaskDispatcher;
+  private dispatchLogOffset = 0;
+  private dispatchLogTimer?: ReturnType<typeof setInterval>;
 
   /**
-   * Multitask mode runs the board autonomously: it picks ready tasks, runs them
-   * in isolated worktrees, integrates completed work and cleans up. Disabling
-   * multitask stops scheduling; in-flight runs finish and are integrated on the
-   * next start. A missing Git repo just leaves the board unavailable.
+   * Multitask mode runs the board in a detached daemon so task runs and merges
+   * survive this session exiting. Disabling multitask stops scheduling new work
+   * but never kills an in-flight run; the daemon exits itself once drained.
    */
   private syncDispatcher(): void {
-    const shouldRun = this.activeAgent === ORCHESTRATOR_AGENT;
-    if (!shouldRun) {
-      this.dispatcher?.stop();
-      this.dispatcher = undefined;
-      return;
-    }
-    if (this.dispatcher) return;
+    if (this.activeAgent !== ORCHESTRATOR_AGENT) return; // leave any daemon running
+    this.tailDispatchLog();
+    this.ensureDispatchDaemon();
+  }
+
+  /**
+   * Spawn `midas task dispatch` detached when no leader holds the board lease.
+   * The lease makes repeats harmless and elects exactly one daemon across
+   * sessions; the daemon cleans itself up once the board is drained.
+   */
+  private ensureDispatchDaemon(): void {
     let board: TaskBoard;
+    try { board = new TaskBoard(this.options.cwd); } catch { return; }
+    if (board.hasActiveDispatcher()) return;
     try {
-      board = new TaskBoard(this.options.cwd);
-    } catch {
-      return; // Not a Git repository; the /tasks panel already explains this.
-    }
-    const dispatcher = new TaskDispatcher(board, {
-      concurrency: this.taskConcurrency(),
-      onEvent: (message) => {
-        this.options.controller.transcript.addRecord(message);
-        void this.refreshBranch();
-        this.tui.requestRender();
-      },
-    });
-    this.dispatcher = dispatcher;
-    void dispatcher.start().catch((error) => {
-      this.dispatcher = undefined;
-      this.options.controller.transcript.addRecord(
-        `Dispatcher unavailable: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      const bin = fileURLToPath(new URL("../../bin/midas.js", import.meta.url));
+      const child = spawn(process.execPath, [bin, "task", "dispatch", "--cwd", this.options.cwd, "--until-drained"], {
+        cwd: this.options.cwd, detached: true, stdio: "ignore", env: process.env,
+      });
+      child.unref();
+    } catch (error) {
+      this.options.controller.transcript.addRecord(`Dispatcher unavailable: ${error instanceof Error ? error.message : String(error)}`);
       this.tui.requestRender();
-    });
+    }
+  }
+
+  /** Tail the daemon's event log so its progress still appears in the transcript. */
+  private tailDispatchLog(): void {
+    if (this.dispatchLogTimer) return;
+    let board: TaskBoard;
+    try { board = new TaskBoard(this.options.cwd); } catch { return; }
+    const path = join(board.directory, "dispatch.log");
+    this.dispatchLogTimer = setInterval(() => {
+      try {
+        const size = statSync(path).size;
+        if (size < this.dispatchLogOffset) this.dispatchLogOffset = 0; // truncated/rotated
+        if (size === this.dispatchLogOffset) return;
+        const chunk = readFileSync(path, "utf8").slice(this.dispatchLogOffset);
+        this.dispatchLogOffset = size;
+        let added = false;
+        for (const line of chunk.split("\n")) {
+          if (!line.trim()) continue;
+          this.options.controller.transcript.addRecord(line.replace(/^\S+ /, ""));
+          added = true;
+        }
+        if (added) { void this.refreshBranch(); this.tui.requestRender(); }
+      } catch { /* no log yet */ }
+    }, 1000);
+    this.dispatchLogTimer.unref?.();
   }
 
   private openTasks(): void {
@@ -3716,7 +3738,7 @@ export class MidasApp {
     // Flush the unsent input and shell state so reopening restores both.
     this.saveDraftNow();
     this.persistSessionState();
-    this.dispatcher?.stop();
+    // The board daemon is detached on purpose; quitting must not kill it.
     if (this.tasksTimer) clearInterval(this.tasksTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
     if (this.timer) clearInterval(this.timer);

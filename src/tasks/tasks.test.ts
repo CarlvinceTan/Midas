@@ -8,7 +8,7 @@ import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { TaskBoard, git, scopesOverlap } from "./board.ts";
 import { runTask, mergeTask, cleanupTask, revisionNotice } from "./runner.ts";
 import { TaskDispatcher, defaultTaskConcurrency } from "./dispatcher.ts";
-import { taskCli } from "./cli.ts";
+import { taskCli, appendDispatchLog, boardDrained } from "./cli.ts";
 import { pathToFileURL } from "node:url";
 import { eventSessionId } from "../opencode/session.ts";
 import { findImagePaths, readImageAttachment } from "../lib/attachments.ts";
@@ -224,6 +224,25 @@ test("dispatcher merges completed work onto the checked-out branch", async (t) =
   await dispatcher.drain();
   assert.equal(git(cwd, "show", "main:result.txt"), "done");
   assert.equal(board.get(task.id).merge, "merged");
+});
+
+test("dispatch daemon exits quietly when another leader holds the lease", async (t) => {
+  const { cwd, board } = fixture(t);
+  const release = board.lease("dispatch", 60_000);
+  t.after(() => release());
+  await quiet(() => taskCli(["--cwd", cwd, "dispatch"]));
+  assert.equal(board.hasActiveDispatcher(), true);
+});
+
+test("dispatch log appends events and boardDrained reflects completion", (t) => {
+  const { board } = fixture(t);
+  const task = board.add(contract);
+  assert.equal(boardDrained(board), false);
+  appendDispatchLog(board.directory, "T1: started");
+  const text = readFileSync(join(board.directory, "dispatch.log"), "utf8");
+  assert.match(text, /T1: started/);
+  board.update(task.id, (t) => { t.merge = "merged"; });
+  assert.equal(boardDrained(board), true);
 });
 
 test("editing a running task notifies its worker once with the new contract", async (t) => {
