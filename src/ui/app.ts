@@ -2200,44 +2200,28 @@ export class MidasApp {
     ).length;
   }
 
-  /** Steer every queued message into the running turn at once (cmd+enter). */
+  /**
+   * Steer only the top queued message (cmd+enter); the rest stay queued so a
+   * second press sends the next one. `!` shell commands steer by running now;
+   * slash commands cannot steer, so they stay queued.
+   */
   private steerQueued(): void {
-    if (this.queue.length === 0) return;
-    // Slash commands can't steer, so they stay queued. `!` shell commands steer
-    // by running now; everything else steers as a normal message.
-    const steering: QueuedPrompt[] = [];
-    const carried: QueuedPrompt[] = [];
-    const shells: QueuedPrompt[] = [];
-    for (const item of this.queue) {
-      if (item.text.startsWith("/")) carried.push(item);
-      else if (this.shellCommand(item.text)) shells.push(item);
-      else steering.push(item);
-    }
-    if (steering.length === 0 && shells.length === 0) {
+    const item = this.queue[0];
+    if (!item) return;
+    const shell = this.shellCommand(item.text);
+    if (!shell && item.text.startsWith("/")) {
       this.flash("Command queued until the run settles");
       return;
     }
-    this.queue = carried;
+    // Only the top item leaves the queue.
+    this.queue.shift();
+    this.persistSessionState();
     this.tui.requestRender();
-    if (shells.length > 0) {
-      // Sequential so the single `shellProcess` (cancel target) stays valid.
-      void (async () => {
-        for (const item of shells) {
-          const shell = this.shellCommand(item.text);
-          if (shell) await this.runShellCommand(shell.command, shell.exclude);
-        }
-      })();
-    }
-    if (steering.length === 0) {
-      this.flash(`Running ${shells.length} queued shell command${shells.length === 1 ? "" : "s"}`);
+    if (shell) {
+      void this.runShellCommand(shell.command, shell.exclude);
       return;
     }
-    const text = steering.map((item) => item.text).join("\n\n");
-    const attachments = steering.flatMap((item) => item.attachments);
-    // Show the steer immediately; the v2 queue does not always echo it back.
-    const localId = this.options.controller.transcript.addLocalUserMessage(text);
-    this.pendingSteers.push({ text, at: Date.now(), localId });
-    void this.sendPrompt(text, attachments);
+    this.steerPrompt(item);
   }
 
   /**
