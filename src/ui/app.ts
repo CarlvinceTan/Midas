@@ -66,7 +66,7 @@ import { SearchPicker } from "./components/search-picker.ts";
 import { readDraft, writeDraft, type StoredDraft } from "../lib/drafts.ts";
 import { readSessionState, writeSessionState, type StoredBash } from "../lib/session-state.ts";
 import { resolveCdTarget } from "../lib/shell.ts";
-import { agentSettingsRows, groupAgentNames, selectableAgentNames, BOARD_WORKER_AGENT, DEFAULT_INTERACTIVE_AGENT, ORCHESTRATOR_AGENT } from "../lib/agents.ts";
+import { agentCallerLabel, agentSettingsRows, groupAgentNames, selectableAgentNames, BOARD_WORKER_AGENT, DEFAULT_INTERACTIVE_AGENT, ORCHESTRATOR_AGENT } from "../lib/agents.ts";
 import { listSkills, loadPiSettings, piAgentDir, readAuthedProviders, readLastSelectedModel, removeAuthedProvider, rowPad, thinkingLevelFor, updateGlobalSetting, updateModelThinkingLevel, writeLastSelectedModel, type PiSettings, type SkillEntry, midasConfigDir, midasProjectDir, agentsGlobalDir, agentsProjectDir } from "../config/pi.ts";
 import { loadCustomCommands, renderCommandTemplate, type CustomCommand } from "../config/commands.ts";
 import { spawn } from "node:child_process";
@@ -2746,25 +2746,27 @@ export class MidasApp {
       const agent = byName.get(name);
       return agent ? [{ agent, label, group }] : [];
     });
+    const entryLabels = [DEFAULT_INTERACTIVE_AGENT, ORCHESTRATOR_AGENT].map(capitalize).join(", ");
     const items = agents.map(({ agent, label, group }) => {
-      const configured = agent.model ? `${agent.model.providerID}/${agent.model.modelID}` : undefined;
       const override = this.resolveModelRef(overrides[agent.name]);
-      // No specific model: fall back to what this agent last used, then its own
-      // config, then the global last-selected model.
-      const lastUsed = this.resolveModelRef(this.agentLastUsedMap()[agent.name]) ?? this.resolveModelRef(configured) ?? this.model;
-      const shownModel = override ?? lastUsed;
-      const thinking = shownModel ? this.thinkingForAgent(agent.name, shownModel) : undefined;
+      const isEntry = agent.name === DEFAULT_INTERACTIVE_AGENT || agent.name === ORCHESTRATOR_AGENT;
+      // Entry agents remember the model they last used; every other agent
+      // inherits the model of whichever agents can invoke it.
+      const fallback = isEntry
+        ? "Last Used"
+        : `Default (${agentCallerLabel(this.agentCatalog, agent.name) ?? entryLabels})`;
+      const thinking = override ? this.thinkingForAgent(agent.name, override) : undefined;
       return {
         id: `agent:${agent.name}`,
         label,
-        // A specific model shows its reasoning level; "Last Used" stays terse.
-        currentValue: override ? `${modelDisplayLabel(override)}${thinking ? ` · ${thinking}` : ""}` : "Last Used",
+        // A specific model shows its reasoning level; inherited defaults stay terse.
+        currentValue: override ? `${modelDisplayLabel(override)}${thinking ? ` · ${thinking}` : ""}` : fallback,
         group,
         submenu: (_current: string, done: (value?: string) => void) => {
-          // "Last Used" means no per-agent override; the agent uses the model it
-          // last ran with, or its configured/global default.
+          // The first choice clears any per-agent override: entry agents fall
+          // back to Last Used, others to the model of their invoker(s).
           const choices: ModelChoice[] = [
-            { providerID: "", modelID: "", name: "Last Used", providerName: "" },
+            { providerID: "", modelID: "", name: fallback, providerName: "" },
             ...this.models,
           ];
           // Show the choice as a breadcrumb in the panel border instead of
@@ -2780,7 +2782,7 @@ export class MidasApp {
               if (!choice.providerID) {
                 this.setAgentModel(agent.name, undefined);
                 this.setAgentThinkingLevel(agent.name, undefined);
-                finish("Last Used");
+                finish(fallback);
               } else {
                 this.setAgentModel(agent.name, `${choice.providerID}/${choice.modelID}`);
                 finish(modelDisplayLabel(choice));
