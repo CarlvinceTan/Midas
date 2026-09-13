@@ -4,7 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme as initPiTheme } from "@earendil-works/pi-coding-agent";
 import { stripAnsi } from "../lib/ansi.ts";
 import { initTheme } from "../theme/theme.ts";
-import { submitAction, ensureDispatcherOnSubmit, WorkingIndicator, voiceToggle, voiceFrameTitle, exitVoiceOnEscape, pickAgentModelRef } from "./app.ts";
+import { submitAction, ensureDispatcherOnSubmit, WorkingIndicator, voiceToggle, voiceFrameTitle, exitVoiceOnEscape, pickAgentModelRef, pickAgentThinking } from "./app.ts";
 
 initPiTheme(undefined, false);
 initTheme(undefined);
@@ -118,6 +118,12 @@ test("agent model precedence: session, override, config, last used", () => {
   assert.equal(pickAgentModelRef({ configured: "c", lastUsed: "l" }), "c");
   assert.equal(pickAgentModelRef({ lastUsed: "l" }), "l");
   assert.equal(pickAgentModelRef({}), undefined);
+});
+
+test("agent reasoning precedence: own level, model level, fallback", () => {
+  assert.equal(pickAgentThinking({ override: "high", model: "low", fallback: "medium" }), "high");
+  assert.equal(pickAgentThinking({ model: "low", fallback: "medium" }), "low");
+  assert.equal(pickAgentThinking({ fallback: "medium" }), "medium");
 });
 
 test("escape exits voice only while listening and not in autocomplete", () => {

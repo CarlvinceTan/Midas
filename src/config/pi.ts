@@ -76,6 +76,8 @@ export interface PiSettings {
   voiceSttCommand?: string;
   /** Per-agent "Last Used" model ref (`provider/model`), used when no specific override is set. */
   agentLastUsed?: Record<string, string>;
+  /** Per-agent reasoning level chosen alongside its specific model. */
+  agentThinkingLevels?: Record<string, string>;
   [key: string]: unknown;
 }
 

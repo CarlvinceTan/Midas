@@ -162,6 +162,11 @@ export function pickAgentModelRef(input: { session?: string; override?: string; 
   return input.session ?? input.override ?? input.configured ?? input.lastUsed;
 }
 
+/** Reasoning precedence: the agent's own level, then the model's, then current. */
+export function pickAgentThinking(input: { override?: string; model?: string; fallback?: string }): string | undefined {
+  return input.override ?? input.model ?? input.fallback;
+}
+
 export function voiceFrameTitle(input: { voice: boolean; orchestrator: boolean }): string | undefined {
   // Multitask is indicated by the tomato frame colour, not a title.
   return input.voice ? "Listening" : undefined;
@@ -1123,7 +1128,12 @@ export class MidasApp {
     // Each agent can run a different model; adopt it and its reasoning level.
     this.syncControllerModel();
     const model = this.effectiveModel();
-    if (model) this.restoreThinkingForModel(model.providerID, model.modelID);
+    if (model) {
+      // A per-agent reasoning override wins; otherwise adopt the model's level.
+      const override = this.agentThinkingMap()[name];
+      if (override) this.thinkingLevel = override;
+      else this.restoreThinkingForModel(model.providerID, model.modelID);
+    }
     this.resetStats();
     this.syncDispatcher();
     // Repaint the frame and existing prompt cards in the new mode's colour.
@@ -1170,6 +1180,41 @@ export class MidasApp {
     map[agent] = ref;
     (this.options.settings as Record<string, unknown>).agentLastUsed = map;
     updateGlobalSetting("agentLastUsed", map);
+  }
+
+  /** Per-agent reasoning overrides, chosen after picking a specific model. */
+  private agentThinkingMap(): Record<string, string> {
+    const value = this.options.settings.agentThinkingLevels;
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? { ...(value as Record<string, string>) }
+      : {};
+  }
+
+  private setAgentThinkingLevel(agent: string, level: string | undefined): void {
+    const map = this.agentThinkingMap();
+    if (level) map[agent] = level;
+    else delete map[agent];
+    (this.options.settings as Record<string, unknown>).agentThinkingLevels = map;
+    updateGlobalSetting("agentThinkingLevels", map);
+    if (agent === this.activeAgent) {
+      if (level) this.thinkingLevel = level;
+      else {
+        const model = this.effectiveModel();
+        if (model) this.restoreThinkingForModel(model.providerID, model.modelID);
+      }
+      this.applyEditorBorderColor();
+      this.transcriptView.invalidate();
+      this.tui.requestRender();
+    }
+  }
+
+  /** Reasoning an agent should use: its own override, else the model's global level. */
+  private thinkingForAgent(agent: string, model?: ModelChoice): string {
+    return pickAgentThinking({
+      override: this.agentThinkingMap()[agent],
+      model: model ? thinkingLevelFor(this.options.settings, model.providerID, model.modelID) : undefined,
+      fallback: this.thinkingLevel,
+    })!;
   }
 
   /** Model declared in the agent's own opencode config, if any. */
@@ -2708,10 +2753,13 @@ export class MidasApp {
       // config, then the global last-selected model.
       const lastUsed = this.resolveModelRef(this.agentLastUsedMap()[agent.name]) ?? this.resolveModelRef(configured) ?? this.model;
       const lastUsedLabel = lastUsed ? `Last Used (${modelDisplayLabel(lastUsed)})` : "Last Used";
+      const shownModel = override ?? lastUsed;
+      const thinking = shownModel ? this.thinkingForAgent(agent.name, shownModel) : undefined;
       return {
         id: `agent:${agent.name}`,
         label,
-        currentValue: override ? modelDisplayLabel(override) : lastUsedLabel,
+        // Show the model with its reasoning level, e.g. "openai/gpt-5 · high".
+        currentValue: `${override ? modelDisplayLabel(override) : lastUsedLabel}${thinking ? ` · ${thinking}` : ""}`,
         group,
         submenu: (_current: string, done: (value?: string) => void) => {
           // "Last Used" means no per-agent override; the agent uses the model it
@@ -2732,10 +2780,13 @@ export class MidasApp {
             (choice) => {
               if (!choice.providerID) {
                 this.setAgentModel(agent.name, undefined);
+                this.setAgentThinkingLevel(agent.name, undefined);
                 finish(lastUsedLabel);
               } else {
                 this.setAgentModel(agent.name, `${choice.providerID}/${choice.modelID}`);
                 finish(modelDisplayLabel(choice));
+                // Choosing a model then chooses its reasoning level for the agent.
+                this.openAgentThinkingPicker(agent.name, choice);
               }
             },
             () => finish(),
@@ -2757,6 +2808,24 @@ export class MidasApp {
       new PanelOverlay(() => (this.agentBreadcrumb ? `Agents > ${this.agentBreadcrumb}` : "agents"), new CompactSearchList(list, true)),
       { width: "70%", maxHeight: "70%" },
     );
+  }
+
+  /** After choosing a specific model for an agent, pick its reasoning level. */
+  private openAgentThinkingPicker(agent: string, model: ModelChoice): void {
+    const current = this.agentThinkingMap()[agent] ?? thinkingLevelFor(this.options.settings, model.providerID, model.modelID);
+    const picker = new ThinkingPicker(
+      THINKING_LEVELS,
+      current,
+      undefined,
+      (level: string) => {
+        this.setAgentThinkingLevel(agent, level);
+        this.flash(`${capitalize(agent)} · ${modelDisplayLabel(model)} · ${level}`);
+        this.openAgents();
+      },
+      () => {},
+      () => this.openAgents(),
+    );
+    this.showOverlay(picker, { width: "64%", maxHeight: "70%" });
   }
 
   private openSettings(): void {
