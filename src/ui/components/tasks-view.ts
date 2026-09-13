@@ -1,10 +1,15 @@
 import { matchesKey, truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { theme } from "../../theme/theme.ts";
+import { theme, type ThemeColor } from "../../theme/theme.ts";
 import type { Task } from "../../tasks/board.ts";
 
 const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/** Pure glyph rendering; color is applied at the call site via `taskIconColor`. */
 export function taskIcon(task: Task, frame: number): string {
-  return task.status === "new" ? "○" : task.status === "running" ? frames[frame % frames.length]! : task.status === "completed" ? "✓" : "!";
+  return task.status === "new" ? "○" : task.status === "running" ? frames[frame % frames.length]! : task.status === "completed" ? "✓" : "✗";
+}
+/** Theme color for the status glyph; `undefined` leaves the default foreground (new/ready). */
+export function taskIconColor(task: Task): ThemeColor | undefined {
+  return task.status === "running" ? "accent" : task.status === "completed" ? "success" : task.status === "blocked" ? "error" : undefined;
 }
 const safe = (text: string): string => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 
@@ -52,7 +57,9 @@ export class TasksView implements Component {
       if (label !== lastGroup) { lines.push(t.fg("accent", safe(label))); lastGroup = label; }
       const waiting = (task.dependencies ?? []).filter((id) => this.tasks.find((v) => v.id === id)?.merge !== "merged");
       const status = task.merge === "merged" ? `⤵ merged → ${task.target}` : task.merge === "failed" ? "! merge failed" : task.merge === "integrating" ? "integrating…" : task.status === "completed" ? "not merged" : task.status === "blocked" ? "blocked" : waiting.length ? `waiting on ${waiting.join(", ")}` : task.status === "new" ? "ready" : task.attempts.at(-1)?.branch ?? "provisioning";
-      lines.push(`${start + i === this.selected ? "→" : " "} ${taskIcon(task, Math.floor(Date.now() / 100))} ${safe(task.id)}  ${safe(task.title)}  ${t.fg("muted", safe(status))}`);
+      const icon = taskIcon(task, Math.floor(Date.now() / 100));
+      const color = taskIconColor(task);
+      lines.push(`${start + i === this.selected ? "→" : " "} ${color ? t.fg(color, icon) : icon} ${safe(task.id)}  ${safe(task.title)}  ${t.fg("muted", safe(status))}`);
     });
     if (sorted.length > 7) lines.push(t.fg("dim", `${this.selected + 1}/${sorted.length}`));
     const selected = sorted[this.selected];
