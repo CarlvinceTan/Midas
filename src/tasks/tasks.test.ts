@@ -32,11 +32,10 @@ function fixture(t: { after(fn: () => void): void }): { cwd: string; board: Task
 }
 const contract = { title: "Implement feature", group: "Feature", instructions: "Add result.txt", checks: ["test -f result.txt"] };
 
-test("worktree lifecycle shares board and leaves dirty main checkout untouched", async (t) => {
+test("worktree lifecycle merges into the checked-out branch", async (t) => {
   const { cwd, board } = fixture(t);
-  const mainHead = git(cwd, "rev-parse", "HEAD");
-  writeFileSync(join(cwd, "base.txt"), "user edits\n");
   const task = board.add(contract);
+  assert.equal(task.target, "main");
   await runTask(board, task.id, async (_, attempt, session) => {
     assert.notEqual(attempt.worktree, cwd);
     assert.equal(new TaskBoard(attempt.worktree).directory, board.directory);
@@ -47,11 +46,16 @@ test("worktree lifecycle shares board and leaves dirty main checkout untouched",
   assert.equal(board.get(task.id).status, "completed");
   assert.equal(board.get(task.id).merge, "not-merged");
   assert.ok(board.get(task.id).attempts[0]!.checkedTree);
+  // A dirty checkout defers the merge instead of clobbering the user's edits.
+  writeFileSync(join(cwd, "base.txt"), "user edits\n");
+  await mergeTask(board, task.id);
+  assert.equal(board.get(task.id).merge, "not-merged");
+  assert.equal(readFileSync(join(cwd, "base.txt"), "utf8"), "user edits\n");
+  // Once clean, the task merges straight onto the checked-out branch.
+  git(cwd, "checkout", "--", "base.txt");
   await mergeTask(board, task.id);
   assert.equal(board.get(task.id).merge, "merged");
-  assert.equal(git(cwd, "rev-parse", "HEAD"), mainHead);
-  assert.equal(readFileSync(join(cwd, "base.txt"), "utf8"), "user edits\n");
-  assert.equal(git(cwd, "show", "midas/integration:result.txt"), "done");
+  assert.equal(readFileSync(join(cwd, "result.txt"), "utf8"), "done\n");
   await cleanupTask(board, task.id);
   assert.equal(board.get(task.id).attempts[0]!.cleaned, true);
   assert.equal(board.read().tasks.length, 1);
@@ -104,22 +108,24 @@ test("merge conflict preserves result and never advances target", async (t) => {
   const b = board.add({ ...contract, checks: ["test -f base.txt"] });
   for (const task of [a, b]) await runTask(board, task.id, async (_, attempt) => writeFileSync(join(attempt.worktree, "base.txt"), task.id));
   await mergeTask(board, a.id);
-  const before = git(cwd, "rev-parse", "midas/integration");
+  const before = git(cwd, "rev-parse", "HEAD");
   await assert.rejects(mergeTask(board, b.id));
   assert.equal(board.get(b.id).status, "completed");
   assert.equal(board.get(b.id).merge, "failed");
-  assert.equal(git(cwd, "rev-parse", "midas/integration"), before);
+  assert.equal(git(cwd, "rev-parse", "HEAD"), before);
   await assert.rejects(cleanupTask(board, b.id), /Only merged/);
 });
 
-test("checked-out integration target and dirty cleanup are refused", async (t) => {
+test("merge defers when the target branch is not checked out; dirty cleanup is refused", async (t) => {
   const { cwd, board } = fixture(t);
   const task = board.add(contract);
   await runTask(board, task.id, async (_, attempt) => writeFileSync(join(attempt.worktree, "result.txt"), "done"));
-  git(cwd, "checkout", "midas/integration");
-  await assert.rejects(mergeTask(board, task.id), /checked out/);
+  git(cwd, "checkout", "-b", "other");
+  await mergeTask(board, task.id);
+  assert.equal(board.get(task.id).merge, "not-merged");
   git(cwd, "checkout", "main");
   await mergeTask(board, task.id);
+  assert.equal(board.get(task.id).merge, "merged");
   writeFileSync(join(board.get(task.id).attempts[0]!.worktree, "local.txt"), "keep");
   await assert.rejects(cleanupTask(board, task.id), /local or ignored/);
 });
@@ -204,26 +210,20 @@ test("dispatcher respects concurrency and waits for dependency merges", async (t
   assert.equal(board.get(dependent.id).status, "completed");
 });
 
-test("dispatcher promotes merged work onto the checked-out branch when allowed", async (t) => {
+test("dispatcher merges completed work onto the checked-out branch", async (t) => {
   const { cwd, board } = fixture(t);
   const task = board.add(contract);
-  let idle = false;
   const dispatcher = new TaskDispatcher(board, {
     lease: false,
     intervalMs: 10,
     concurrency: 1,
-    canPromote: () => idle,
     worker: async (_, attempt) => { writeFileSync(join(attempt.worktree, "result.txt"), "done"); },
   });
   await settle(dispatcher);
-  // Gated: the work is integrated but not yet on the checked-out branch.
-  assert.throws(() => git(cwd, "show", "main:result.txt"));
-  assert.equal(git(cwd, "show", "midas/integration:result.txt"), "done");
-  idle = true;
-  await dispatcher.tick();
-  await dispatcher.drain();
   dispatcher.stop();
+  await dispatcher.drain();
   assert.equal(git(cwd, "show", "main:result.txt"), "done");
+  assert.equal(board.get(task.id).merge, "merged");
 });
 
 test("dispatcher marks interrupted runs blocked instead of double-running", async (t) => {

@@ -3527,9 +3527,6 @@ export class MidasApp {
       return; // Not a Git repository; the /tasks panel already explains this.
     }
     const dispatcher = new TaskDispatcher(board, {
-      // Never merge into the primary worktree while the user or the orchestrator
-      // is writing it; Git is still the final guard against a clobber.
-      canPromote: () => !this.isRunActive() && this.activeOverlay === undefined && !this.shellProcess,
       onEvent: (message) => {
         this.options.controller.transcript.addRecord(message);
         void this.refreshBranch();

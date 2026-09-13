@@ -2,7 +2,6 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { TaskBoard, type Task } from "./board.ts";
 import { runTask, mergeTask, cleanupTask, type Worker } from "./runner.ts";
-import { promoteIntegration, type PromotionResult } from "./promote.ts";
 
 export interface DispatcherOptions {
   /** Maximum tasks running at once. Default 2. */
@@ -15,10 +14,6 @@ export interface DispatcherOptions {
   cleanup?: boolean;
   /** Take the cross-process dispatcher lease. Default true. */
   lease?: boolean;
-  /** Best-effort merge of integrated work into the checked-out branch. Default true. */
-  promote?: boolean;
-  /** Gate promotion (e.g. the TUI must be idle). Default always allowed. */
-  canPromote?: () => boolean;
   onEvent?: (message: string) => void;
 }
 
@@ -34,8 +29,6 @@ export class TaskDispatcher {
   private release?: () => void;
   private ticking?: Promise<void>;
   private stopped = false;
-  /** Last promotion state we surfaced, so a deferred merge does not spam ticks. */
-  private promotionNotice = "";
 
   constructor(
     private board: TaskBoard,
@@ -101,7 +94,8 @@ export class TaskDispatcher {
         const latest = this.board.get(task.id);
         if (latest.status === "completed" && latest.merge === "not-merged") {
           await mergeTask(this.board, task.id);
-          this.options.onEvent?.(`${task.id}: merged into ${latest.target}`);
+          const after = this.board.get(task.id);
+          if (after.merge === "merged") this.options.onEvent?.(`${task.id}: merged into ${after.target}`);
         }
         if (this.options.cleanup !== false) {
           const after = this.board.get(task.id);
@@ -115,49 +109,6 @@ export class TaskDispatcher {
         this.options.onEvent?.(`${task.id}: autonomous step failed — ${message}`);
       }
     }
-    if (this.options.promote !== false) await this.promote();
-  }
-
-  /**
-   * Merge the integration tip into the branch the user is actually on, once per
-   * tick. Best-effort by design: a dirty tree, an in-progress operation, or a
-   * conflict only defers promotion; task integration is unaffected.
-   */
-  private async promote(): Promise<void> {
-    if (this.options.canPromote && !this.options.canPromote()) return;
-    let result: PromotionResult;
-    try {
-      result = await promoteIntegration(this.board);
-    } catch (error) {
-      this.notice(`auto-merge failed — ${error instanceof Error ? error.message : String(error)}`);
-      return;
-    }
-    this.reportPromotion(result);
-  }
-
-  private reportPromotion(result: PromotionResult): void {
-    const branch = result.branch ?? "current branch";
-    if (result.status === "current" || result.status === "skipped") {
-      this.promotionNotice = "";
-      return;
-    }
-    const message =
-      result.status === "promoted"
-        ? `${branch}: merged midas/integration (${result.after?.slice(0, 7) ?? "integration"})`
-        : result.status === "dirty"
-          ? `${branch}: auto-merge deferred — commit or stash to receive finished tasks`
-          : result.status === "conflict"
-            ? `${branch}: auto-merge conflicted and was aborted — resolve manually to receive finished tasks`
-            : `${branch}: auto-merge deferred — ${result.detail ?? "not ready"}`;
-    // A promoted merge always reports; deferred states report once per transition.
-    if (result.status === "promoted") this.promotionNotice = "";
-    else if (this.promotionNotice === message) return;
-    else this.promotionNotice = message;
-    this.notice(message);
-  }
-
-  private notice(message: string): void {
-    this.options.onEvent?.(message);
   }
 
   private dispatchReady(): void {

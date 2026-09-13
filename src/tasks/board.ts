@@ -35,9 +35,6 @@ export interface Task extends Contract {
 }
 export interface Board { version: 1; tasks: Task[] }
 
-/** Staging branch every board task integrates into before being promoted. */
-export const INTEGRATION_BRANCH = "midas/integration";
-
 /**
  * Blocking git. Reserved for one-time setup (resolving the board directory) and
  * tests; runtime worktree/merge/validation operations must use `gitAsync` so a
@@ -165,6 +162,17 @@ export class TaskBoard {
     if (!task) throw new Error(`Unknown task: ${id}`);
     return task;
   }
+  /**
+   * Branch checked out in this worktree. Tasks branch from and merge back into
+   * it, so the board tracks the user's current branch instead of a staging ref.
+   */
+  currentBranch(): string {
+    try {
+      return git(this.cwd, "symbolic-ref", "--short", "HEAD");
+    } catch {
+      throw new Error("Multitask requires a checked-out branch (detached HEAD is not supported)");
+    }
+  }
   update(id: string, fn: (task: Task) => void): void {
     this.mutate((board) => {
       const task = board.tasks.find((task) => task.id === id);
@@ -180,11 +188,12 @@ export class TaskBoard {
       || (c.dependencies !== undefined && (!Array.isArray(c.dependencies) || c.dependencies.some((v) => typeof v !== "string")))) {
       throw new Error("Contract requires title, instructions, nonempty checks[], and optional group/dependencies[]");
     }
+    const target = this.currentBranch();
     return this.mutate((board) => {
       for (const id of c.dependencies ?? []) if (!board.tasks.some((t) => t.id === id)) throw new Error(`Unknown dependency: ${id}`);
       const task: Task = { title: c.title, instructions: c.instructions, checks: [...c.checks], group: c.group,
         dependencies: [...(c.dependencies ?? [])], id: `T${board.tasks.length + 1}`, status: "new", merge: "not-merged",
-        target: INTEGRATION_BRANCH, attempts: [], revision: 1 };
+        target, attempts: [], revision: 1 };
       board.tasks.push(task);
       return task;
     });

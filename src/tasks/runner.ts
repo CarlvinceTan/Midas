@@ -1,7 +1,4 @@
 import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import type { Session } from "@opencode-ai/sdk";
 import { TaskBoard, gitAsync, type Task, type Attempt } from "./board.ts";
@@ -108,27 +105,34 @@ export async function mergeTask(board: TaskBoard, id: string): Promise<void> {
     const attempt = task.attempts.at(-1);
     if (task.status !== "completed" || !attempt?.result) throw new Error("Task has no validated result");
     if (task.merge === "merged") return;
-    const ref = `refs/heads/${task.target}`;
     const mergedCommit = attempt.result;
     await board.withIntegration(async () => {
-      if ((await gitAsync(board.cwd, "worktree", "list", "--porcelain")).split("\n").includes(`branch ${ref}`)) throw new Error("Integration branch is checked out; refusing to move it");
-      const base = await gitAsync(board.cwd, "rev-parse", ref);
-      const path = join(board.directory, "integration", randomUUID());
-      mkdirSync(join(board.directory, "integration"), { recursive: true });
-      board.update(id, (t) => { t.merge = "integrating"; t.detail = `Integration worktree: ${path}`; });
+      // Direct merge: the task's branch lands on the branch the user has checked
+      // out right now. Defer (do not fail) when that branch isn't checked out or
+      // the checkout is busy, so the dispatcher retries on a later tick.
+      const current = await gitAsync(board.cwd, "symbolic-ref", "--short", "HEAD");
+      if (current !== task.target) return;
+      if (await gitAsync(board.cwd, "status", "--porcelain")) return;
+      const base = await gitAsync(board.cwd, "rev-parse", "HEAD");
+      board.update(id, (t) => { t.merge = "integrating"; t.detail = `Merging into ${task.target}`; });
       integrating = true;
-      await gitAsync(board.cwd, "worktree", "add", "--detach", path, base);
-      // Failures preserve this tree for inspection; never resolve conflicts automatically.
-      await gitAsync(path, "merge", "--no-edit", "--no-ff", mergedCommit);
-      const candidate = await gitAsync(path, "rev-parse", "HEAD");
-      await checks(task, path);
-      if (await gitAsync(path, "status", "--porcelain")) throw new Error(`Integration checks changed files: ${path}`);
-      const result = await gitAsync(path, "rev-parse", "HEAD");
-      if (result !== candidate) throw new Error("Integration checks changed HEAD");
-      if ((await gitAsync(board.cwd, "worktree", "list", "--porcelain")).split("\n").includes(`branch ${ref}`)) throw new Error("Integration branch became checked out; refusing to move it");
-      await gitAsync(board.cwd, "update-ref", ref, result, base);
-      board.update(id, (t) => { t.merge = "merged"; t.mergedCommit = result; t.detail = `Merged into ${task.target}`; });
-      await gitAsync(board.cwd, "worktree", "remove", path);
+      // Conflicts are never resolved automatically; abort and surface them.
+      try {
+        await gitAsync(board.cwd, "merge", "--no-edit", "--no-ff", mergedCommit);
+      } catch (error) {
+        await gitAsync(board.cwd, "merge", "--abort").catch(() => undefined);
+        throw new Error(`Merge conflict into ${task.target}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      try {
+        await checks(task, board.cwd);
+        if (await gitAsync(board.cwd, "status", "--porcelain")) throw new Error("Integration checks changed files");
+        const result = await gitAsync(board.cwd, "rev-parse", "HEAD");
+        board.update(id, (t) => { t.merge = "merged"; t.mergedCommit = result; t.detail = `Merged into ${task.target}`; });
+      } catch (error) {
+        // Checks failed or dirtied the tree: restore the pre-merge state.
+        await gitAsync(board.cwd, "reset", "--hard", base).catch(() => undefined);
+        throw error;
+      }
     });
   } catch (error) {
     if (integrating && board.get(id).merge !== "merged") board.update(id, (t) => { t.merge = "failed"; t.detail = `${t.detail}\n${String(error)}`; });
