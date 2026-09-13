@@ -4,7 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme as initPiTheme } from "@earendil-works/pi-coding-agent";
 import { stripAnsi } from "../lib/ansi.ts";
 import { initTheme } from "../theme/theme.ts";
-import { submitAction, ensureDispatcherOnSubmit, WorkingIndicator } from "./app.ts";
+import { submitAction, ensureDispatcherOnSubmit, WorkingIndicator, voiceToggle, voiceFrameTitle, exitVoiceOnEscape } from "./app.ts";
 
 initPiTheme(undefined, false);
 initTheme(undefined);
@@ -98,4 +98,26 @@ test("repeated multitask submissions keep exactly one dispatcher leader", () => 
   ensureDispatcherOnSubmit(true, ensure);
   ensureDispatcherOnSubmit(true, ensure);
   assert.equal(starts, 1);
+});
+
+test("voice toggles on and off explicitly and flips with no argument", () => {
+  assert.equal(voiceToggle("on", false), true);
+  assert.equal(voiceToggle("off", true), false);
+  assert.equal(voiceToggle("", false), true);
+  assert.equal(voiceToggle("", true), false);
+  assert.equal(voiceToggle("bogus", false), undefined);
+});
+
+test("the Listening title outranks Multitask and clears when both are off", () => {
+  assert.equal(voiceFrameTitle({ voice: true, orchestrator: true }), "Listening");
+  assert.equal(voiceFrameTitle({ voice: true, orchestrator: false }), "Listening");
+  assert.equal(voiceFrameTitle({ voice: false, orchestrator: true }), "Multitask");
+  assert.equal(voiceFrameTitle({ voice: false, orchestrator: false }), undefined);
+});
+
+test("escape exits voice only while listening and not in autocomplete", () => {
+  assert.equal(exitVoiceOnEscape({ voiceActive: true, escape: true, autocomplete: false }), true);
+  assert.equal(exitVoiceOnEscape({ voiceActive: true, escape: true, autocomplete: true }), false);
+  assert.equal(exitVoiceOnEscape({ voiceActive: false, escape: true, autocomplete: false }), false);
+  assert.equal(exitVoiceOnEscape({ voiceActive: true, escape: false, autocomplete: false }), false);
 });

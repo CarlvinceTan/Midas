@@ -83,6 +83,15 @@ test("the leading ! of a shell command takes the border color", () => {
   assert.match(line, /\x1b\[34m!\x1b\[39m/);
 });
 
+test("a voice-mode blue border colors the editor's rules", () => {
+  const editor = new Editor(tui, theme, { paddingX: 0 });
+  // The app installs this color while `/voice` is listening.
+  editor.borderColor = (text: string): string => `\x1b[34m${text}\x1b[39m`;
+  editor.setText("dictated words");
+  const blue = editor.render(40).filter((line) => line.includes("\x1b[34m"));
+  assert.ok(blue.length >= 2, "top and bottom rules take the blue border");
+});
+
 test("bracketed paste of an image path becomes a chip, large text a yellow marker", () => {
   const image = new Editor(tui, theme, { paddingX: 0 });
   image.handleInput("\x1b[200~/tmp/pasted shot.png\x1b[201~");

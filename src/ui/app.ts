@@ -136,6 +136,34 @@ export function ensureDispatcherOnSubmit(multitask: boolean, ensure: () => void)
   if (multitask) ensure();
 }
 
+/**
+ * Resolve `/voice [on|off]`. An empty argument flips the current state; an
+ * unknown argument returns `undefined` so the caller can report usage.
+ */
+export function voiceToggle(args: string, current: boolean): boolean | undefined {
+  if (args === "on") return true;
+  if (args === "off") return false;
+  if (args === "") return !current;
+  return undefined;
+}
+
+/**
+ * Title drawn into the input frame's top rule. Voice dictation (Listening)
+ * outranks the orchestrator's Multitask mode; with both off there is no title.
+ */
+export function voiceFrameTitle(input: { voice: boolean; orchestrator: boolean }): string | undefined {
+  if (input.voice) return "Listening";
+  return input.orchestrator ? "Multitask" : undefined;
+}
+
+/**
+ * Esc leaves voice mode only while listening and with no autocomplete menu
+ * open, so the same key can still dismiss the menu or abort a run otherwise.
+ */
+export function exitVoiceOnEscape(input: { voiceActive: boolean; escape: boolean; autocomplete: boolean }): boolean {
+  return input.voiceActive && input.escape && !input.autocomplete;
+}
+
 interface LoginEntry {
   providerId: string;
   providerName: string;
@@ -559,6 +587,13 @@ export class MidasApp {
   /** Full agent catalog (names, modes, configured models). */
   private agentCatalog: AgentChoice[] = [];
   private activeAgent = DEFAULT_AGENT;
+  /** True while `/voice` microphone dictation streams into the input. */
+  private voiceActive = false;
+  /**
+   * Speech-to-text backend seam. A later task wires the real controller; with
+   * no controller installed the mode still toggles and repaints cleanly.
+   */
+  private voiceController?: { start(): void; stop(): void };
   /** Branch checked out in the primary worktree, shown in the pinned header. */
   private currentBranch: string | undefined;
   private branchTimer?: ReturnType<typeof setInterval>;
@@ -652,12 +687,9 @@ export class MidasApp {
     this.editor.onSubmit = (text, imageAttachments) => void this.handleSubmit(text, imageAttachments);
     this.editor.onChange = (text: string) => {
       // Only a real shell command ("! " / "!! ") colors the border; deleting the
-      // space leaves "!cmd", which is sent as a normal prompt, so revert.
-      const start = text.trimStart();
-      const bash = start.startsWith("! ") || start.startsWith("!! ");
-      this.editor.borderColor = bash
-        ? (value: string) => theme().fg("bashMode", value)
-        : theme().getThinkingBorderColor(this.currentThinking());
+      // space leaves "!cmd", which is sent as a normal prompt, so revert. Voice
+      // dictation keeps the border blue while it is listening.
+      this.applyEditorBorderColor(text);
       this.scheduleDraftSave();
       this.tui.requestRender();
     };
@@ -1468,6 +1500,53 @@ export class MidasApp {
     this.setActiveAgent(next);
   }
 
+  /**
+   * Border color precedence: voice dictation (blue) wins while listening, then
+   * a real shell command, then the active thinking level.
+   */
+  private applyEditorBorderColor(text: string = this.editor.getText()): void {
+    const start = text.trimStart();
+    const bash = start.startsWith("! ") || start.startsWith("!! ");
+    this.editor.borderColor = this.voiceActive
+      ? (value: string) => theme().fg("accent", value)
+      : bash
+        ? (value: string) => theme().fg("bashMode", value)
+        : theme().getThinkingBorderColor(this.currentThinking());
+  }
+
+  private toggleVoice(args: string): void {
+    const next = voiceToggle(args, this.voiceActive);
+    if (next === undefined) { this.fail("Usage: /voice [on|off]"); return; }
+    this.setVoiceActive(next);
+  }
+
+  /**
+   * Enter or leave `/voice` dictation. Rebuilds the input frame (title + blue
+   * border) and starts/stops the optional speech controller; the existing input
+   * text is left untouched.
+   */
+  private setVoiceActive(active: boolean): void {
+    this.voiceActive = active;
+    if (active) this.voiceController?.start();
+    else this.voiceController?.stop();
+    this.applyEditorBorderColor();
+    this.mountEditor();
+    this.options.controller.transcript.addNotice(
+      active ? "Voice listening — speak to dictate. Esc to exit." : "Voice dictation off.",
+    );
+    this.tui.requestRender();
+  }
+
+  /**
+   * Seam for a streaming speech-to-text controller: `committed` is finalized
+   * text, `partial` is the in-progress tail. Voice is text-only, so replacing
+   * the input drops any image chips.
+   */
+  private applyVoiceTranscript(committed: string, partial: string): void {
+    this.editor.setText(`${committed}${partial}`);
+    this.tui.requestRender();
+  }
+
   private setThinkingLevel(level: string): void {
     this.thinkingLevel = level;
     const model = this.effectiveModel();
@@ -2126,6 +2205,7 @@ export class MidasApp {
         "stats",
         "tasks",
         "multitask",
+        "voice",
         "reload",
         "mcps",
         "skills",
@@ -2165,6 +2245,7 @@ export class MidasApp {
       { name: "stats", description: "Token usage and spend by agent" },
       { name: "tasks", description: "Task board grouped by feature or worktree" },
       { name: "multitask", description: "Toggle orchestration mode (on/off)" },
+      { name: "voice", description: "Dictate into the input with the microphone (on/off)" },
       { name: "reload", description: "Reload settings, models and resources" },
       { name: "mcps", description: "Manage MCP servers" },
       { name: "skills", description: "Manage skills" },
@@ -2206,6 +2287,7 @@ export class MidasApp {
     if (name === "stats") return this.openStats();
     if (name === "tasks") return this.openTasks();
     if (name === "multitask") return this.toggleMultitask(args);
+    if (name === "voice") return this.toggleVoice(args);
     if (name === "reload") return this.doReload();
     if (name === "mcps") return this.openMcps();
     if (name === "skills") return this.openSkills();
@@ -2322,6 +2404,17 @@ export class MidasApp {
 
   private handleGlobalKey(data: string): { consume?: boolean } | undefined {
     if (this.activeOverlay) return undefined;
+    // Esc leaves voice dictation without also aborting the running agent.
+    if (
+      exitVoiceOnEscape({
+        voiceActive: this.voiceActive,
+        escape: matchesKey(data, "escape"),
+        autocomplete: this.editor.isShowingAutocomplete(),
+      })
+    ) {
+      this.setVoiceActive(false);
+      return { consume: true };
+    }
     if (matchesKey(data, "up")) {
       if (this.navigateEditorHistory(-1)) return { consume: true };
     } else if (matchesKey(data, "down")) {
@@ -3511,7 +3604,7 @@ export class MidasApp {
     const frame = new RoundedDialogFrame(
       () => Math.min(1, rowPad(this.options.cwd)),
       undefined,
-      this.activeAgent === ORCHESTRATOR_AGENT ? "Multitask" : undefined,
+      voiceFrameTitle({ voice: this.voiceActive, orchestrator: this.activeAgent === ORCHESTRATOR_AGENT }),
       { top: () => this.historyLabel("up"), bottom: () => this.historyLabel("down") },
     );
     frame.addChild(this.editor);
