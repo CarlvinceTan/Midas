@@ -222,10 +222,7 @@ test("details toggle keeps a stable height across selections", () => {
     view.tasks = tasks;
     selectRow(view, selected);
     view.handleInput("\r"); // open the actions menu
-    view.handleInput("\x1b[B");
-    view.handleInput("\x1b[B");
-    view.handleInput("\x1b[B"); // Pause -> Cancel -> Remove -> Show details
-    view.handleInput("\r"); // invoke Show details
+    view.handleInput("\r"); // invoke the first action (Show details)
     const lines = view.render(160);
     assert.ok(lines.some((line) => line.includes("Worktree:")), `details missing for index ${selected}`);
     heights.add(lines.length);
@@ -234,7 +231,7 @@ test("details toggle keeps a stable height across selections", () => {
 });
 
 test("Enter opens an actions menu scoped to the task status", () => {
-  const view = new TasksView(() => {}, false, { pause: () => {}, resume: () => {}, cancel: () => {}, remove: () => {} });
+  const view = new TasksView(() => {}, true, { pause: () => {}, resume: () => {}, cancel: () => {}, remove: () => {} });
   view.tasks = [task({ id: "T1", status: "running" }), task({ id: "T2", status: "paused" })];
   view.handleInput("\r");
   let text = stripAnsi(view.render(160).join("\n"));
@@ -252,9 +249,24 @@ test("Enter opens an actions menu scoped to the task status", () => {
   assert.doesNotMatch(text, /Pause/);
 });
 
+test("the default main agent sees a read-only board with no control actions", () => {
+  // main never drives the multitask architecture, even though it can read the
+  // same board: Enter still opens the menu, but it only offers inspection.
+  const view = new TasksView(() => {}, false, { pause: () => {}, resume: () => {}, cancel: () => {}, remove: () => {} });
+  view.tasks = [task({ id: "T1", status: "running" }), task({ id: "T2", status: "new" })];
+  view.handleInput("\r");
+  const text = stripAnsi(view.render(160).join("\n"));
+  assert.match(text, /Actions/);
+  assert.match(text, /Show details/);
+  assert.doesNotMatch(text, /Pause/);
+  assert.doesNotMatch(text, /Resume/);
+  assert.doesNotMatch(text, /Cancel/);
+  assert.doesNotMatch(text, /Remove/);
+});
+
 test("menu navigation stays in the menu and Esc closes only the menu", () => {
   const paused: string[] = [];
-  const view = new TasksView(() => { throw new Error("overlay closed"); }, false, { pause: (id) => paused.push(id), resume: () => {}, cancel: () => {}, remove: () => {} });
+  const view = new TasksView(() => { throw new Error("overlay closed"); }, true, { pause: (id) => paused.push(id), resume: () => {}, cancel: () => {}, remove: () => {} });
   view.tasks = [task({ id: "T1", status: "running" }), task({ id: "T2", status: "running" })];
   view.handleInput("\r"); // menu on T1
   view.handleInput("\x1b[B"); // Pause -> Cancel

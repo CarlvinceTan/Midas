@@ -3674,21 +3674,27 @@ export class MidasApp {
       try { run(board); } catch (error) { this.flash(error instanceof Error ? error.message : String(error)); }
       this.tui.requestRender();
     };
+    // Board control belongs to the multitask workflow. The default `main` agent
+    // gets a read-only browser of the same board, with no mutation hooks at all,
+    // so nothing outside `/multitask` can drive the pipeline.
+    const multitask = this.activeAgent === ORCHESTRATOR_AGENT;
     const view = new TasksView(
       () => this.closeOverlay(),
-      this.activeAgent === ORCHESTRATOR_AGENT,
-      {
-        pause: (id) => control((b) => b.pause(id)),
-        resume: (id) => control((b) => b.resume(id)),
-        cancel: (id) => control((b) => b.cancel(id)),
-        // Removal also cleans worktrees, so it is async.
-        remove: (id) => {
-          if (!board) return;
-          void removeTask(board, id)
-            .catch((error) => this.flash(error instanceof Error ? error.message : String(error)))
-            .finally(() => this.tui.requestRender());
-        },
-      },
+      multitask,
+      multitask
+        ? {
+            pause: (id) => control((b) => b.pause(id)),
+            resume: (id) => control((b) => b.resume(id)),
+            cancel: (id) => control((b) => b.cancel(id)),
+            // Removal also cleans worktrees, so it is async.
+            remove: (id) => {
+              if (!board) return;
+              void removeTask(board, id)
+                .catch((error) => this.flash(error instanceof Error ? error.message : String(error)))
+                .finally(() => this.tui.requestRender());
+            },
+          }
+        : undefined,
     );
     try { board = new TaskBoard(this.options.cwd); }
     catch { view.error = "Tasks require an existing Git repository. No repository was created."; }

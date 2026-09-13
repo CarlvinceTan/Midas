@@ -56,8 +56,11 @@ export class TasksView implements Component {
   private details = false;
   private menu?: { taskId: string; actions: MenuAction[]; index: number };
   /**
-   * `multitask` selects the empty-state copy: multitask creates tasks from
-   * submitted requests, so it must not point the user at a shell command.
+   * `multitask` is true only in the orchestrator's mode. It selects the
+   * empty-state copy (multitask creates tasks from submitted requests, so it
+   * must not point the user at a shell command) and enables board control. In
+   * the default `main` agent the panel is a read-only browser: the board is the
+   * multitask architecture's state, and main never drives it.
    */
   constructor(
     private onCancel: () => void,
@@ -91,10 +94,14 @@ export class TasksView implements Component {
     const task = sorted[Math.max(0, Math.min(this.selected, sorted.length - 1))];
     if (!task) return;
     const actions: MenuAction[] = [];
-    if (task.status === "running" || task.status === "new") actions.push({ label: "Pause", run: () => this.controls.pause(task.id) });
-    if (task.status === "paused" || task.status === "blocked") actions.push({ label: "Resume", run: () => this.controls.resume(task.id) });
-    if (task.merge !== "merged" && task.status !== "completed" && task.status !== "cancelled") actions.push({ label: "Cancel", run: () => this.controls.cancel(task.id) });
-    if (task.status !== "running") actions.push({ label: "Remove", run: () => this.controls.remove(task.id) });
+    // Board control belongs to the multitask workflow; outside it (the default
+    // `main` agent) the panel is a read-only browser of the same board.
+    if (this.multitask) {
+      if (task.status === "running" || task.status === "new") actions.push({ label: "Pause", run: () => this.controls.pause(task.id) });
+      if (task.status === "paused" || task.status === "blocked") actions.push({ label: "Resume", run: () => this.controls.resume(task.id) });
+      if (task.merge !== "merged" && task.status !== "completed" && task.status !== "cancelled") actions.push({ label: "Cancel", run: () => this.controls.cancel(task.id) });
+      if (task.status !== "running") actions.push({ label: "Remove", run: () => this.controls.remove(task.id) });
+    }
     actions.push({ label: "Show details", run: () => { this.details = !this.details; } });
     actions.push({ label: "Close", run: () => {} });
     this.menu = { taskId: task.id, actions, index: 0 };
