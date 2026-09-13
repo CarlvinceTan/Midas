@@ -1,19 +1,10 @@
 import { existsSync } from "node:fs";
-import { availableParallelism, cpus } from "node:os";
 import { join } from "node:path";
 import { TaskBoard, scopesOverlap, type Task } from "./board.ts";
 import { runTask, mergeTask, cleanupTask, type Worker, type OutputSink } from "./runner.ts";
 
-/**
- * Safe default for how many task agents run at once: leave a core for the UI,
- * and cap so a many-core host is not swamped by opencode workers.
- */
-export function defaultTaskConcurrency(parallelism: number = availableParallelism?.() ?? cpus().length): number {
-  return Math.max(2, Math.min(parallelism - 1, 8));
-}
-
 export interface DispatcherOptions {
-  /** Maximum tasks running at once. Defaults to the machine-tuned value. */
+  /** Maximum tasks running at once. Omitted means unlimited. */
   concurrency?: number;
   /** Poll interval. Default 5s. */
   intervalMs?: number;
@@ -129,7 +120,9 @@ export class TaskDispatcher {
 
   private dispatchReady(): void {
     if (this.stopped) return;
-    const limit = Math.max(1, this.options.concurrency ?? defaultTaskConcurrency());
+    const limit = this.options.concurrency === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.max(1, this.options.concurrency);
     const snapshot = this.board.read();
     const merged = (id: string): boolean => snapshot.tasks.find((t) => t.id === id)?.merge === "merged";
     const laneOf = (task: Task): string => task.group || `#${task.id}`;

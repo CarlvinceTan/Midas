@@ -70,8 +70,6 @@ export interface PiSettings {
   defaultThinkingLevel?: string;
   modelThinkingLevels?: Record<string, string>;
   hideThinkingBlock?: boolean;
-  /** Max concurrent board task agents; defaults to a machine-tuned value. */
-  taskConcurrency?: number;
   /** Command whose stdout streams JSONL STT events for `/voice`. */
   voiceSttCommand?: string;
   /** Per-agent "Last Used" model ref (`provider/model`), used when no specific override is set. */

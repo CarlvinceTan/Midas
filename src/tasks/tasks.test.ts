@@ -7,7 +7,7 @@ import type { Event } from "@opencode-ai/sdk";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { TaskBoard, git, scopesOverlap } from "./board.ts";
 import { runTask, mergeTask, cleanupTask, removeTask, revisionNotice } from "./runner.ts";
-import { TaskDispatcher, defaultTaskConcurrency } from "./dispatcher.ts";
+import { TaskDispatcher } from "./dispatcher.ts";
 import { taskCli, appendDispatchLog, boardDrained } from "./cli.ts";
 import { pathToFileURL } from "node:url";
 import { eventSessionId } from "../opencode/session.ts";
@@ -454,12 +454,37 @@ test("cross-lane scope overlap warns but does not block", async (t) => {
   dispatcher.stop();
 });
 
-test("default task concurrency scales with the machine and clamps", () => {
-  assert.equal(defaultTaskConcurrency(1), 2);
-  assert.equal(defaultTaskConcurrency(4), 3);
-  assert.equal(defaultTaskConcurrency(16), 8);
-  assert.equal(defaultTaskConcurrency(0), 2);
-  assert.ok(defaultTaskConcurrency() >= 2);
+test("dispatcher defaults to unlimited concurrency so every ready lane starts", async (t) => {
+  const { board } = fixture(t);
+  for (let i = 0; i < 10; i++) board.add({ title: `Task ${i}`, instructions: "x", checks: ["true"] });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const dispatcher = new TaskDispatcher(board, {
+    lease: false,
+    worker: async () => { await gate; },
+  });
+  await dispatcher.tick();
+  assert.equal(dispatcher.running, 10, "without an explicit cap every ready lane dispatches");
+  release();
+  await dispatcher.drain();
+  dispatcher.stop();
+});
+
+test("dispatcher still honors an explicit concurrency cap", async (t) => {
+  const { board } = fixture(t);
+  for (let i = 0; i < 10; i++) board.add({ title: `Task ${i}`, instructions: "x", checks: ["true"] });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const dispatcher = new TaskDispatcher(board, {
+    lease: false,
+    concurrency: 2,
+    worker: async () => { await gate; },
+  });
+  await dispatcher.tick();
+  assert.equal(dispatcher.running, 2, "an explicit concurrency is still a cap");
+  release();
+  await dispatcher.drain();
+  dispatcher.stop();
 });
 
 test("dispatcher marks interrupted runs blocked instead of double-running", async (t) => {
