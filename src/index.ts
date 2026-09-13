@@ -119,7 +119,7 @@ function parseModel(value: string | undefined): { providerID: string; modelID: s
 
 async function runPrint(cli: Cli): Promise<void> {
   const server = await startServer({ cwd: cli.cwd, configFile: midasConfigFile(cli.cwd) });
-  const controller = new SessionController({ client: server.client, cwd: cli.cwd });
+  const controller = new SessionController({ client: server.client, clientV2: server.clientV2, cwd: cli.cwd });
   try {
     if (cli.session) await controller.resume(cli.session);
     else await controller.start();
@@ -172,7 +172,7 @@ async function runPrint(cli: Cli): Promise<void> {
 
 async function runTui(cli: Cli): Promise<void> {
   const server = await startServer({ cwd: cli.cwd, configFile: midasConfigFile(cli.cwd) });
-  const controller = new SessionController({ client: server.client, cwd: cli.cwd });
+  const controller = new SessionController({ client: server.client, clientV2: server.clientV2, cwd: cli.cwd });
   const settings = loadPiSettings(cli.cwd);
   try {
     if (cli.session) await controller.resume(cli.session);
