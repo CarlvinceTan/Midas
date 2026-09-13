@@ -3,13 +3,32 @@ import { theme, type ThemeColor } from "../../theme/theme.ts";
 import type { Task } from "../../tasks/board.ts";
 
 const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-/** Pure glyph rendering; color is applied at the call site via `taskIconColor`. */
+/**
+ * Pure glyph rendering. Legend: `○` ready (no agent working), the spinner while
+ * a worker is running, `✓` completed, `!` blocked, `✗` cancelled. Color is
+ * applied at the call site via `taskIconColor`.
+ */
 export function taskIcon(task: Task, frame: number): string {
-  return task.status === "new" ? "○" : task.status === "running" ? frames[frame % frames.length]! : task.status === "completed" ? "✓" : "✗";
+  switch (task.status) {
+    case "running": return frames[frame % frames.length]!;
+    case "completed": return "✓";
+    case "new": return "○";
+    case "cancelled": return "✗";
+    default: return "!"; // blocked, and any future failure state
+  }
 }
-/** Theme color for the status glyph; `undefined` leaves the default foreground (new/ready). */
+/**
+ * Theme color for the status glyph; `undefined` leaves the default foreground
+ * (ready). Mirrors `taskIcon`: the spinner is blue, the tick green, and every
+ * failure marker (blocked `!`, cancelled `✗`) red.
+ */
 export function taskIconColor(task: Task): ThemeColor | undefined {
-  return task.status === "running" ? "accent" : task.status === "completed" ? "success" : task.status === "blocked" ? "error" : undefined;
+  switch (task.status) {
+    case "running": return "accent";
+    case "completed": return "success";
+    case "new": return undefined;
+    default: return "error";
+  }
 }
 const safe = (text: string): string => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 /** Number of task rows in the scroll window; group headers are extra and reserved separately. */
@@ -106,7 +125,7 @@ export class TasksView implements Component {
         const label = group(task);
         if (label !== lastGroup) { lines.push(t.fg("accent", safe(label))); lastGroup = label; }
         const waiting = (task.dependencies ?? []).filter((id) => this.tasks.find((v) => v.id === id)?.merge !== "merged");
-        const status = task.merge === "merged" ? `⤵ merged → ${task.target}` : task.merge === "failed" ? "! merge failed" : task.merge === "integrating" ? "integrating…" : task.status === "completed" ? "not merged" : task.status === "blocked" ? "blocked" : waiting.length ? `waiting on ${waiting.join(", ")}` : task.status === "new" ? "ready" : task.attempts.at(-1)?.branch ?? "provisioning";
+        const status = task.merge === "merged" ? `⤵ merged → ${task.target}` : task.merge === "failed" ? "! merge failed" : task.merge === "integrating" ? "integrating…" : task.status === "completed" ? "not merged" : task.status === "blocked" ? "blocked" : task.status === "cancelled" ? "cancelled" : waiting.length ? `waiting on ${waiting.join(", ")}` : task.status === "new" ? "ready" : task.attempts.at(-1)?.branch ?? "provisioning";
         const icon = taskIcon(task, Math.floor(Date.now() / 100));
         const color = taskIconColor(task);
         // Build the row from a fixed prefix, a flexible title and a fixed status.

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { availableParallelism, cpus } from "node:os";
 import { join } from "node:path";
 import { TaskBoard, scopesOverlap, type Task } from "./board.ts";
-import { runTask, mergeTask, cleanupTask, type Worker } from "./runner.ts";
+import { runTask, mergeTask, cleanupTask, type Worker, type OutputSink } from "./runner.ts";
 
 /**
  * Safe default for how many task agents run at once: leave a core for the UI,
@@ -23,6 +23,11 @@ export interface DispatcherOptions {
   cleanup?: boolean;
   /** Take the cross-process dispatcher lease. Default true. */
   lease?: boolean;
+  /**
+   * Where worker/check output goes. Omitted in the TUI so subprocess output can
+   * never scribble over the renderer; the CLI passes `stdoutOutput`.
+   */
+  output?: OutputSink;
   onEvent?: (message: string) => void;
 }
 
@@ -104,7 +109,7 @@ export class TaskDispatcher {
       try {
         const latest = this.board.get(task.id);
         if (latest.status === "completed" && latest.merge === "not-merged") {
-          await mergeTask(this.board, task.id);
+          await mergeTask(this.board, task.id, this.options.output);
           const after = this.board.get(task.id);
           if (after.merge === "merged") this.options.onEvent?.(`${task.id}: merged into ${after.target}`);
         }
@@ -154,7 +159,7 @@ export class TaskDispatcher {
       this.options.onEvent?.(`${task.id}: started`);
       const controller = new AbortController();
       this.controllers.set(task.id, controller);
-      const promise = runTask(this.board, task.id, this.options.worker, controller.signal)
+      const promise = runTask(this.board, task.id, this.options.worker, controller.signal, { output: this.options.output })
         .then(() => this.options.onEvent?.(`${task.id}: completed`))
         .catch((error) => this.options.onEvent?.(`${task.id}: ${error instanceof Error ? error.message : String(error)}`))
         .finally(() => {

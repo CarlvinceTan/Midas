@@ -94,6 +94,38 @@ test("failed checks block completion and retries preserve attempts", async (t) =
   assert.ok(existsSync(oldTree));
 });
 
+test("check output is captured, never written to stdout, and forwarded to the sink", async (t) => {
+  const { board } = fixture(t);
+  const task = board.add({ ...contract, checks: ["echo hello-check"] });
+  const seen: string[] = [];
+  const leaked = await captureStdout(() =>
+    runTask(board, task.id, async (_, attempt) => writeFileSync(join(attempt.worktree, "result.txt"), "done"), undefined, { output: (chunk) => seen.push(chunk) }),
+  );
+  const output = seen.join("");
+  assert.match(output, /Check: echo hello-check/);
+  assert.match(output, /hello-check/);
+  assert.doesNotMatch(leaked, /hello-check/, "subprocess output must not reach process.stdout");
+  assert.equal(board.get(task.id).status, "completed");
+});
+
+test("runTask discards subprocess output when no sink is injected", async (t) => {
+  const { board } = fixture(t);
+  const task = board.add({ ...contract, checks: ["echo should-not-leak"] });
+  const leaked = await captureStdout(() =>
+    runTask(board, task.id, async (_, attempt) => writeFileSync(join(attempt.worktree, "result.txt"), "done")),
+  );
+  assert.doesNotMatch(leaked, /should-not-leak/);
+  assert.equal(board.get(task.id).status, "completed");
+});
+
+test("a failed check folds its captured output into the task detail", async (t) => {
+  const { board } = fixture(t);
+  const task = board.add({ ...contract, checks: ["echo boom-detail; false"] });
+  await assert.rejects(captureStdout(() => runTask(board, task.id, async () => {})), /Check failed/);
+  assert.equal(board.get(task.id).status, "blocked");
+  assert.match(board.get(task.id).detail ?? "", /boom-detail/);
+});
+
 test("worker branch changes and check mutations cannot be marked complete", async (t) => {
   const { board } = fixture(t);
   const task = board.add(contract);
@@ -409,6 +441,18 @@ async function quiet<T>(fn: () => Promise<T>): Promise<T> {
   const original = process.stdout.write;
   process.stdout.write = (() => true) as typeof process.stdout.write;
   try { return await fn(); } finally { process.stdout.write = original; }
+}
+
+/** Runs `fn` while recording everything written to process.stdout (forwarded on). */
+async function captureStdout(fn: () => Promise<unknown>): Promise<string> {
+  const original = process.stdout.write.bind(process.stdout);
+  let captured = "";
+  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+    captured += String(chunk);
+    return (original as (...args: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof process.stdout.write;
+  try { await fn(); } finally { process.stdout.write = original; }
+  return captured;
 }
 
 test("task authoring requires a live dispatcher lease", async (t) => {

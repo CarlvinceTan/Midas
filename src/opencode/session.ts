@@ -480,33 +480,28 @@ export class SessionController {
 
   /** Answer an opencode `question` request. `answers` is one label array per prompt. */
   async answerQuestion(requestID: string, answers: string[][]): Promise<void> {
-    await this.questionRequest(requestID, "reply", { answers });
+    await this.questionReply(requestID, answers);
     this.transcript.resolveQuestion(requestID);
   }
 
   async rejectQuestion(requestID: string): Promise<void> {
-    await this.questionRequest(requestID, "reject");
+    await this.questionReject(requestID);
     this.transcript.resolveQuestion(requestID);
   }
 
-  private async questionRequest(requestID: string, action: "reply" | "reject", body?: unknown): Promise<void> {
-    // The SDK predates the question routes, so call the HTTP endpoint directly.
-    const client = this.client as unknown as {
-      post: (options: {
-        url: string;
-        path: Record<string, string>;
-        query?: Record<string, string>;
-        headers?: Record<string, string>;
-        body?: unknown;
-      }) => Promise<unknown>;
-    };
-    await client.post({
-      url: `/question/{requestID}/${action}`,
-      path: { requestID },
-      query: { directory: this.cwd },
-      headers: { "Content-Type": "application/json" },
-      ...(body ? { body } : {}),
-    });
+  /**
+   * The question routes live only on the v2 client (the SDK's v1 surface predates
+   * them). `responseStyle: "data"` rejects on a non-2xx, so a failed reply/reject
+   * surfaces instead of silently leaving the prompt in the transcript.
+   */
+  private async questionReply(requestID: string, answers: string[][]): Promise<void> {
+    if (!this.clientV2) throw new Error("Question requests require the v2 API client");
+    await this.clientV2.question.reply({ requestID, directory: this.cwd, answers });
+  }
+
+  private async questionReject(requestID: string): Promise<void> {
+    if (!this.clientV2) throw new Error("Question requests require the v2 API client");
+    await this.clientV2.question.reject({ requestID, directory: this.cwd });
   }
 
   setModel(model: { providerID: string; modelID: string } | undefined): void {

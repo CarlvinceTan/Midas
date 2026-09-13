@@ -104,3 +104,26 @@ test("message versions bump on every mutation, for cheap render caching", () => 
   transcript.upsertPart(textPart("p2", "a2", "other"));
   assert.equal(transcript.messages.find((m) => m.id === "a1")!.version, a1);
 });
+
+test("formatApiError names a network failure instead of the raw URL error", () => {
+  const offline = "No internet connection: couldn't reach the model API. Check your network and try again.";
+  assert.equal(
+    formatApiError("Cannot connect to API: Unable to connect. Is the computer able to access the url?"),
+    offline,
+  );
+  assert.equal(formatApiError("TypeError: fetch failed"), offline);
+  assert.equal(formatApiError("getaddrinfo ENOTFOUND api.example.com"), offline);
+  assert.equal(formatApiError("Rate limit exceeded for model"), "Rate limit exceeded for model");
+});
+
+test("an assistant connection error surfaces the network message", () => {
+  const transcript = new Transcript();
+  transcript.upsertMessage({
+    ...assistant("a1"),
+    error: { name: "APIError", data: { message: "Cannot connect to API: Unable to connect. Is the computer able to access the url?" } },
+  } as unknown as Message);
+  assert.equal(
+    transcript.messages[0]!.error,
+    "No internet connection: couldn't reach the model API. Check your network and try again.",
+  );
+});

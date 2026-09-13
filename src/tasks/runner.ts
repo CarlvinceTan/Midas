@@ -6,13 +6,39 @@ import { startServer } from "../opencode/server.ts";
 import { midasConfigFile } from "../config/pi.ts";
 import { BOARD_WORKER_AGENT } from "../lib/agents.ts";
 
-async function checks(task: Task, cwd: string): Promise<void> {
+/**
+ * Where a worker run's output (check commands, the agent's final text) is sent.
+ * Embedded callers must inject a non-writing sink: the TUI owns the terminal,
+ * so anything a task subprocess prints to stdout corrupts the screen. The
+ * standalone CLI opts into `stdoutOutput` explicitly.
+ */
+export type OutputSink = (chunk: string) => void;
+const discardOutput: OutputSink = () => {};
+/** Streams output to the process stdout; only for the standalone `midas task` CLI. */
+export const stdoutOutput: OutputSink = (chunk) => { process.stdout.write(chunk); };
+
+/** Bound on how much failed-check output is folded into the task detail. */
+const FAILURE_TAIL = 2000;
+
+async function checks(task: Task, cwd: string, output: OutputSink): Promise<void> {
   for (const command of task.checks) {
-    process.stdout.write(`Check: ${command}\n`);
+    output(`Check: ${command}\n`);
     await new Promise<void>((resolve, reject) => {
-      const child = spawn("/bin/bash", ["-c", command], { cwd, stdio: "inherit" });
+      const child = spawn("/bin/bash", ["-c", command], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      let captured = "";
+      const onData = (chunk: Buffer): void => {
+        const text = chunk.toString();
+        captured = (captured + text).slice(-FAILURE_TAIL);
+        output(text);
+      };
+      child.stdout?.on("data", onData);
+      child.stderr?.on("data", onData);
       child.on("error", reject);
-      child.on("exit", (code, signal) => code === 0 ? resolve() : reject(new Error(`Check failed (${code ?? signal}): ${command}`)));
+      child.on("exit", (code, signal) => {
+        if (code === 0) return resolve();
+        const tail = captured.trimEnd();
+        reject(new Error(`Check failed (${code ?? signal}): ${command}${tail ? `\n${tail}` : ""}`));
+      });
     });
   }
 }
@@ -22,8 +48,8 @@ export function revisionNotice(task: Task): string {
   return `Task ${task.id} was updated while you were working. Re-read its contract from the board (\`midas task list\`) and adjust your work to match.\n\nUpdated title: ${task.title}\nUpdated instructions:\n${task.instructions}`;
 }
 
-export type Worker = (task: Task, attempt: Attempt, onSession: (id: string) => void, signal?: AbortSignal, onRevision?: (cb: (task: Task) => void) => void) => Promise<void>;
-const worker: Worker = async (task, attempt, onSession, signal, onRevision) => {
+export type Worker = (task: Task, attempt: Attempt, onSession: (id: string) => void, signal?: AbortSignal, onRevision?: (cb: (task: Task) => void) => void, output?: OutputSink) => Promise<void>;
+const worker: Worker = async (task, attempt, onSession, signal, onRevision, output = discardOutput) => {
   const server = await startServer({ cwd: attempt.worktree, configFile: midasConfigFile(attempt.worktree) });
   let session: Session | undefined;
   const abort = new AbortController();
@@ -57,8 +83,11 @@ const worker: Worker = async (task, attempt, onSession, signal, onRevision) => {
     }) as unknown as { info?: { error?: unknown }; parts?: Array<{ type: string; text?: string }> };
     if (result.info?.error) throw new Error(`Worker failed: ${JSON.stringify(result.info.error)}`);
     const text = (result.parts ?? []).filter((p) => p.type === "text").map((p) => p.text ?? "").join("\n");
-    process.stdout.write(text + "\n");
-    if (!text.trim().endsWith("MIDAS_TASK_DONE")) throw new Error("Worker did not report completion");
+    output(text + "\n");
+    if (!text.trim().endsWith("MIDAS_TASK_DONE")) {
+      const explanation = text.trim().slice(-FAILURE_TAIL);
+      throw new Error(`Worker did not report completion${explanation ? `\n${explanation}` : ""}`);
+    }
   } finally {
     clearTimeout(timeout);
     abort.abort();
@@ -75,9 +104,15 @@ const worker: Worker = async (task, attempt, onSession, signal, onRevision) => {
 export interface RunOptions {
   /** How often to poll for contract edits to steer into the worker. Default 2s. */
   revisionPollMs?: number;
+  /**
+   * Where worker/check output goes. Omitted in the TUI so subprocess output can
+   * never scribble over the renderer; the CLI passes `stdoutOutput`.
+   */
+  output?: OutputSink;
 }
 
 export async function runTask(board: TaskBoard, id: string, execute: Worker = worker, signal?: AbortSignal, options: RunOptions = {}): Promise<void> {
+  const output = options.output ?? discardOutput;
   board.get(id);
   const unlock = board.lock(`task-${id}`);
   const previousAttempts = board.get(id).attempts.length;
@@ -96,11 +131,11 @@ export async function runTask(board: TaskBoard, id: string, execute: Worker = wo
     const attempt = await board.prepare(id);
     const task = board.get(id);
     board.update(id, (t) => { t.detail = "Worker running"; });
-    await execute(task, attempt, (session) => board.update(id, (t) => { t.attempts.at(-1)!.session = session; }), signal, (cb) => { notifyRevision = cb; });
+    await execute(task, attempt, (session) => board.update(id, (t) => { t.attempts.at(-1)!.session = session; }), signal, (cb) => { notifyRevision = cb; }, output);
     await assertHead(attempt);
     board.update(id, (t) => { t.detail = "Validating"; });
     const tree = await snapshot(attempt.worktree);
-    await checks(task, attempt.worktree);
+    await checks(task, attempt.worktree, output);
     await assertHead(attempt);
     if (await snapshot(attempt.worktree) !== tree) throw new Error("Checks modified task files; refusing to checkpoint unvalidated changes");
     if (await gitAsync(attempt.worktree, "diff", "--cached", "--name-only")) {
@@ -140,7 +175,7 @@ async function assertHead(attempt: Attempt): Promise<void> {
   }
 }
 
-export async function mergeTask(board: TaskBoard, id: string): Promise<void> {
+export async function mergeTask(board: TaskBoard, id: string, output: OutputSink = discardOutput): Promise<void> {
   board.get(id);
   const releaseTask = board.lock(`task-${id}`);
   let integrating = false;
@@ -168,7 +203,7 @@ export async function mergeTask(board: TaskBoard, id: string): Promise<void> {
         throw new Error(`Merge conflict into ${task.target}: ${error instanceof Error ? error.message : String(error)}`);
       }
       try {
-        await checks(task, board.cwd);
+        await checks(task, board.cwd, output);
         if (await gitAsync(board.cwd, "status", "--porcelain")) throw new Error("Integration checks changed files");
         const result = await gitAsync(board.cwd, "rev-parse", "HEAD");
         board.update(id, (t) => { t.merge = "merged"; t.mergedCommit = result; t.detail = `Merged into ${task.target}`; });

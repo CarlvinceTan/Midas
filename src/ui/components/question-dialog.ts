@@ -1,5 +1,6 @@
 import { matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import type { QuestionOption, QuestionView } from "../../state/transcript.ts";
+import { CONTENT_END, CONTENT_START, DECORATION, markContent } from "../../lib/ansi.ts";
 import { theme } from "../../theme/theme.ts";
 
 interface Entry extends QuestionOption {
@@ -115,21 +116,41 @@ export class QuestionDialog implements Component {
     const t = theme();
     const total = Math.max(3, width);
     const inner = total - 2;
-    const contentWidth = inner - 1;
+    // Match the other `/` panels: a one-column gutter that collapses on a narrow
+    // terminal so the border still fits.
+    const inset = total >= 9 ? 1 : 0;
+    const contentWidth = Math.max(1, inner - inset * 2);
+    const gutter = " ".repeat(inset);
     const border = (text: string) => t.fg("borderAccent", text);
-    const title = total >= 14 ? " Question " : "";
-    const top =
-      border("╭─") + t.fg("borderAccent", title) + border("─".repeat(Math.max(0, total - 3 - title.length)) + "╮");
-    const row = (line: string): string =>
-      border("│") + " " + pad(truncateToWidth(line, contentWidth, "…"), contentWidth) + border("│");
-
+    // Content bounds keep drag-selection to the text only, excluding the gutter,
+    // fill and borders (same markers `PanelOverlay` uses).
+    const edge = (text: string): string => DECORATION + CONTENT_START + CONTENT_END + text;
+    const row = (line: string): string => {
+      const fitted = truncateToWidth(line, contentWidth, "…");
+      const fill = " ".repeat(Math.max(0, contentWidth - visibleWidth(fitted)));
+      return border("│") + gutter + markContent(fitted) + fill + gutter + border("│");
+    };
+    // The prompt's header and the question counter share the border
+    // (`╭─ Remove UX: Question 1/2 ─╮`) rather than taking body rows, so the
+    // panel stays compact. The header is truncated to whatever fits the border.
     const prompt = this.prompt;
-    if (!prompt) return [top, row(t.fg("text", "Done")), border("╰" + "─".repeat(inner) + "╯")];
+    const count = this.request.questions.length;
+    const header = prompt?.header?.trim();
+    const counter = count > 1 ? `Question ${this.index + 1}/${count}` : "";
+    const labelText = header && counter ? `${header}: ${counter}` : header || counter || "Question";
+    const available = total - 5;
+    const shown = available > 0 ? truncateToWidth(labelText, available, "…") : "";
+    const title = shown ? ` ${shown} ` : "";
+    const top =
+      edge(border("╭─") + t.fg("borderAccent", title) + border("─".repeat(Math.max(0, total - 3 - title.length)) + "╮"));
+    const bottom = edge(border("╰" + "─".repeat(inner) + "╯"));
 
+    if (!prompt) return [top, row(t.fg("text", "Done")), bottom];
+
+    // Just the question in the primary text colour, then the options directly
+    // below it: no header or spacer line.
     const body: string[] = [];
-    if (prompt.header) for (const line of wrap(prompt.header, contentWidth)) body.push(row(t.fg("accent", line)));
-    for (const line of wrap(prompt.question, contentWidth)) body.push(row(t.fg("accent", line)));
-    body.push(row(""));
+    for (const line of wrap(prompt.question, contentWidth)) body.push(row(t.fg("text", line)));
 
     const entries = this.entries();
     entries.forEach((entry, idx) => {
@@ -148,11 +169,10 @@ export class QuestionDialog implements Component {
       }
     });
 
-    const multi = this.request.questions.length > 1 ? `${this.index + 1}/${this.request.questions.length} · ` : "";
     const hint = prompt.multiple ? "Space to toggle · Enter to confirm · Esc to reject" : "Enter to select · Esc to reject";
-    body.push(row(t.fg("dim", `${multi}${hint}`)));
+    body.push(row(t.fg("dim", hint)));
 
-    return [top, ...body, border("╰" + "─".repeat(inner) + "╯")];
+    return [top, ...body, bottom];
   }
 }
 
@@ -170,8 +190,4 @@ function wrap(text: string, width: number): string[] {
   }
   if (current) lines.push(current);
   return lines.length > 0 ? lines : [""];
-}
-
-function pad(text: string, width: number): string {
-  return text + " ".repeat(Math.max(0, width - visibleWidth(text)));
 }

@@ -172,3 +172,48 @@ test("addContext still appends without a reply and never steers", async () => {
   await controller.addContext("imported context");
   assert.deepEqual(pressed, { parts: [{ type: "text", text: "imported context" }], noReply: true });
 });
+
+/** Records v2 question reply/reject calls and can fail either route. */
+function questionFake(fail: "reply" | "reject" | "none" = "none") {
+  const replies: Array<Record<string, unknown>> = [];
+  const rejects: Array<Record<string, unknown>> = [];
+  const clientV2 = {
+    question: {
+      reply: async (parameters: Record<string, unknown>) => {
+        if (fail === "reply") throw new Error("reply route unavailable");
+        replies.push(parameters);
+      },
+      reject: async (parameters: Record<string, unknown>) => {
+        if (fail === "reject") throw new Error("reject route unavailable");
+        rejects.push(parameters);
+      },
+    },
+  };
+  const client = { event: { subscribe: async () => ({ stream: (async function* () {})() }) } };
+  return { client, clientV2, replies, rejects };
+}
+
+test("answering and rejecting a question call the v2 question routes", async () => {
+  const { client, clientV2, replies, rejects } = questionFake();
+  const controller = new SessionController({ client: client as never, clientV2: clientV2 as never, cwd: "/x" });
+  controller.transcript.addQuestion({ id: "req-1", questions: [{ question: "Q?", options: [{ label: "A" }] }] });
+  await controller.answerQuestion("req-1", [["Staging"]]);
+  assert.deepEqual(replies, [{ requestID: "req-1", directory: "/x", answers: [["Staging"]] }]);
+  assert.equal(controller.transcript.questions.length, 0);
+
+  controller.transcript.addQuestion({ id: "req-2", questions: [{ question: "Q?", options: [{ label: "A" }] }] });
+  await controller.rejectQuestion("req-2");
+  assert.deepEqual(rejects, [{ requestID: "req-2", directory: "/x" }]);
+  assert.equal(controller.transcript.questions.length, 0);
+});
+
+test("a failed question reply or reject leaves the prompt pending", async () => {
+  for (const fail of ["reply", "reject"] as const) {
+    const { client, clientV2 } = questionFake(fail);
+    const controller = new SessionController({ client: client as never, clientV2: clientV2 as never, cwd: "/x" });
+    controller.transcript.addQuestion({ id: "req-3", questions: [{ question: "Q?", options: [{ label: "A" }] }] });
+    const call = fail === "reply" ? controller.answerQuestion("req-3", [["A"]]) : controller.rejectQuestion("req-3");
+    await assert.rejects(call, new RegExp(`${fail} route unavailable`));
+    assert.equal(controller.transcript.questions.length, 1, `${fail}: prompt should stay pending`);
+  }
+});

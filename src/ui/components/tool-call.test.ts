@@ -79,6 +79,13 @@ test("toolLiveText reports preparing vs running actions", () => {
   assert.equal(toolLiveText(reading, "/cwd"), "Reading src/a.ts");
 });
 
+test("question tools read as asking, not the generic running label", () => {
+  const asking = edit({ status: "running", tool: "question", input: { questions: [] } });
+  assert.equal(toolLiveText(asking, "/cwd"), "Asking question");
+  const asked = edit({ status: "completed", tool: "question", input: { questions: [] } });
+  assert.equal(stripAnsi(renderTool(asked, 80, false, "/cwd")[0]!), "✓ Asked question");
+});
+
 test("formatMcpDisplayName title-cases server and tool names", () => {
   assert.equal(formatMcpDisplayName("davinci-resolve"), "Davinci Resolve");
   assert.equal(formatMcpDisplayName("openaiDeveloperDocs"), "Openai Developer Docs");

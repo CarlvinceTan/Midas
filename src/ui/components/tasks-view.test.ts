@@ -77,13 +77,15 @@ function renderSelected(tasks: Task[], selected: number): string[] {
 test("taskIcon keeps raw glyphs and colored status reflects task state", () => {
   assert.equal(taskIcon(task(), 0), "○");
   assert.equal(taskIcon(task({ status: "completed" }), 0), "✓");
-  assert.equal(taskIcon(task({ status: "blocked" }), 0), "✗");
+  assert.equal(taskIcon(task({ status: "blocked" }), 0), "!");
+  assert.equal(taskIcon(task({ status: "cancelled" }), 0), "✗");
   const running = task({ status: "running" });
   assert.notEqual(taskIcon(running, 0), taskIcon(running, 1));
   assert.equal(taskIconColor(task()), undefined);
   assert.equal(taskIconColor(running), "accent");
   assert.equal(taskIconColor(task({ status: "completed" })), "success");
   assert.equal(taskIconColor(task({ status: "blocked" })), "error");
+  assert.equal(taskIconColor(task({ status: "cancelled" })), "error");
 });
 
 test("completed rows paint the tick green", () => {
@@ -98,8 +100,13 @@ test("running rows paint a spinner frame blue", () => {
   assert.ok(coloredFrames.some((frame) => line.includes(frame)), `missing blue spinner: ${line}`);
 });
 
-test("blocked rows paint the cross red", () => {
+test("blocked rows paint the bang red", () => {
   const line = renderRow({ status: "blocked" });
+  assert.ok(line.includes(theme().fg("error", "!")), `missing red bang: ${line}`);
+});
+
+test("cancelled rows paint the cross red", () => {
+  const line = renderRow({ status: "cancelled" });
   assert.ok(line.includes(theme().fg("error", "✗")), `missing red cross: ${line}`);
 });
 

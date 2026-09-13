@@ -1,7 +1,7 @@
 import { appendFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TaskBoard } from "./board.ts";
-import { runTask, mergeTask, cleanupTask } from "./runner.ts";
+import { runTask, mergeTask, cleanupTask, stdoutOutput } from "./runner.ts";
 import { TaskDispatcher } from "./dispatcher.ts";
 
 const DISPATCH_LOG_LIMIT = 2_000;
@@ -48,7 +48,7 @@ export async function taskCli(args: string[]): Promise<void> {
       if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("--concurrency requires a positive integer");
     }
     const log = (message: string): void => { process.stdout.write(`${message}\n`); appendDispatchLog(board.directory, message); };
-    const dispatcher = new TaskDispatcher(board, { concurrency, onEvent: log });
+    const dispatcher = new TaskDispatcher(board, { concurrency, output: stdoutOutput, onEvent: log });
     try {
       await dispatcher.start();
     } catch (error) {
@@ -96,7 +96,7 @@ export async function taskCli(args: string[]): Promise<void> {
     process.stdout.write(JSON.stringify(board.edit(value!, JSON.parse(readFileSync(extra!, "utf8"))), null, 2) + "\n");
   }
   if (command === "list") process.stdout.write(JSON.stringify(board.read(), null, 2) + "\n");
-  if (command === "run") await runTask(board, value!);
-  if (command === "merge") await mergeTask(board, value!);
+  if (command === "run") await runTask(board, value!, undefined, undefined, { output: stdoutOutput });
+  if (command === "merge") await mergeTask(board, value!, stdoutOutput);
   if (command === "cleanup") await cleanupTask(board, value!);
 }

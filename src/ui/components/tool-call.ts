@@ -349,6 +349,14 @@ function rowFor(tool: ToolView, cwd: string, width = 120): ToolRow {
         previewText: output,
       };
     }
+    case "question": {
+      return {
+        preparing: "Preparing question",
+        running: "Asking question",
+        done: "Asked question",
+        previewText: output,
+      };
+    }
     default: {
       const summary = text(input.description) || text(input.command) || text(input.query) || tool.title || "";
       const label = tool.tool;
