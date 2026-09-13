@@ -198,8 +198,6 @@ export interface AppOptions {
 interface TranscriptOptions {
   hideThinking: boolean;
   expandedTools: boolean;
-  /** True while multitask is active, so prompt cards render in the tomato accent. */
-  multitask?: boolean;
 }
 
 /** Renders only the transcript runs; the scroll container owns the header. */
@@ -748,7 +746,6 @@ export class MidasApp {
     );
     this.transcriptOptions.hideThinking = this.hideThinking;
     this.transcriptOptions.expandedTools = this.expandedTools;
-    this.transcriptOptions.multitask = this.activeAgent === ORCHESTRATOR_AGENT;
     this.transcriptView = new TranscriptMessages(
       options.controller.transcript,
       this.transcriptOptions,
@@ -1136,8 +1133,7 @@ export class MidasApp {
     }
     this.resetStats();
     this.syncDispatcher();
-    // Repaint the frame and existing prompt cards in the new mode's colour.
-    this.transcriptOptions.multitask = this.activeAgent === ORCHESTRATOR_AGENT;
+    // Repaint the frame and existing prompt cards in the new mode's border colour.
     this.transcriptView?.invalidate();
     this.applyEditorBorderColor();
     if (!this.activeOverlay) this.mountEditor();
@@ -1611,7 +1607,7 @@ export class MidasApp {
   /**
    * Colour precedence: voice dictation (blue) wins while listening, then a real
    * shell command, then multitask (tomato), then the active thinking level.
-   * Multitask tints the editable text as well as the frame.
+   * Multitask tints the frame; the editable text stays the normal colour.
    */
   private applyEditorBorderColor(text: string = this.editor.getText()): void {
     // Only a bang at the very start is shell mode; a leading space keeps it a
@@ -1625,9 +1621,6 @@ export class MidasApp {
         : multitask
           ? (value: string) => theme().fg("multitask", value)
           : theme().getThinkingBorderColor(this.currentThinking());
-    this.editor.textColor = multitask && !this.voiceActive
-      ? (value: string) => theme().fg("multitask", value)
-      : undefined;
   }
 
   private toggleVoice(args: string): void {
@@ -3362,7 +3355,7 @@ export class MidasApp {
     const picker = new OptionPicker(
       statuses.length > 0
         ? statuses.map((status) => ({ label: status.name, description: status.status, value: status.name }))
-        : [{ label: "None configured", description: "add MCP servers in your opencode config", value: "" }],
+        : [{ label: "None configured", description: "add an mcp block to midas.jsonc in ~/.midas, .midas, or .agents", value: "" }],
       (name) => {
         this.closeOverlay();
         if (!name) return;

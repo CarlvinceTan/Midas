@@ -272,8 +272,6 @@ export class Editor {
     scrollOffset = 0;
     // Border color (can be changed dynamically)
     borderColor;
-    // Optional foreground color for the editable text (e.g. multitask accent)
-    textColor;
     // Autocomplete support
     autocompleteProvider;
     autocompleteTriggerCharacters = [...DEFAULT_AUTOCOMPLETE_TRIGGER_CHARACTERS];
@@ -533,8 +531,7 @@ export class Editor {
             const padding = " ".repeat(Math.max(0, contentWidth - lineVisibleWidth));
             const lineRightPadding = cursorInPadding ? rightPadding.slice(1) : rightPadding;
             // Render the line (no side borders, just horizontal lines above and below)
-            const styledLine = styleMarkers(displayText, this.borderColor, this.validImageMarkers(), this.validPasteIds());
-            result.push(`${leftPadding}${this.textColor ? this.textColor(styledLine) : styledLine}${padding}${lineRightPadding}`);
+            result.push(`${leftPadding}${styleMarkers(displayText, this.borderColor, this.validImageMarkers(), this.validPasteIds())}${padding}${lineRightPadding}`);
         }
         // Render bottom border (with scroll indicator if more content below)
         const linesBelow = layoutLines.length - (this.scrollOffset + visibleLines.length);

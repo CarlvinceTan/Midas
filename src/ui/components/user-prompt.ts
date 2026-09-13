@@ -29,8 +29,6 @@ export class UserPromptCard extends Container {
     private text: string,
     private outputPad: number,
     private borderColor: (content: string) => string,
-    /** Multitask renders the prompt body in the tomato accent too. */
-    private multitask = false,
   ) {
     super();
     this.rebuild();
@@ -45,8 +43,9 @@ export class UserPromptCard extends Container {
     // file is attached from the prompt's file parts when it is sent, so the
     // agent still reads the actual image rather than this label. The chip is
     // wrapped as inline code so markdown leaves it intact, then the code style
-    // paints it yellow and restores the prompt text colour.
-    const promptTextColor = this.multitask ? "multitask" : "userMessageText";
+    // paints it yellow and restores the prompt text colour. Only the card's
+    // border carries the mode colour; the body text stays the normal prompt colour.
+    const promptTextColor = "userMessageText";
     const markdownTheme = {
       ...getMarkdownTheme(),
       code: (content: string) => `${IMAGE_MARKER_COLOR}${content}${theme().getFgAnsi(promptTextColor)}`,

@@ -42,8 +42,6 @@ export declare class Editor implements Component, Focusable {
     private renderedAutocompleteHeight;
     private scrollOffset;
     borderColor: (str: string) => string;
-    /** Optional foreground color applied to the editable text. */
-    textColor?: (str: string) => string;
     private autocompleteProvider?;
     private autocompleteTriggerCharacters;
     private autocompleteTriggerPattern;
