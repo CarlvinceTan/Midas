@@ -2752,20 +2752,19 @@ export class MidasApp {
       // No specific model: fall back to what this agent last used, then its own
       // config, then the global last-selected model.
       const lastUsed = this.resolveModelRef(this.agentLastUsedMap()[agent.name]) ?? this.resolveModelRef(configured) ?? this.model;
-      const lastUsedLabel = lastUsed ? `Last Used (${modelDisplayLabel(lastUsed)})` : "Last Used";
       const shownModel = override ?? lastUsed;
       const thinking = shownModel ? this.thinkingForAgent(agent.name, shownModel) : undefined;
       return {
         id: `agent:${agent.name}`,
         label,
-        // Show the model with its reasoning level, e.g. "openai/gpt-5 · high".
-        currentValue: `${override ? modelDisplayLabel(override) : lastUsedLabel}${thinking ? ` · ${thinking}` : ""}`,
+        // A specific model shows its reasoning level; "Last Used" stays terse.
+        currentValue: override ? `${modelDisplayLabel(override)}${thinking ? ` · ${thinking}` : ""}` : "Last Used",
         group,
         submenu: (_current: string, done: (value?: string) => void) => {
           // "Last Used" means no per-agent override; the agent uses the model it
           // last ran with, or its configured/global default.
           const choices: ModelChoice[] = [
-            { providerID: "", modelID: "", name: lastUsedLabel, providerName: "" },
+            { providerID: "", modelID: "", name: "Last Used", providerName: "" },
             ...this.models,
           ];
           // Show the choice as a breadcrumb in the panel border instead of
@@ -2781,7 +2780,7 @@ export class MidasApp {
               if (!choice.providerID) {
                 this.setAgentModel(agent.name, undefined);
                 this.setAgentThinkingLevel(agent.name, undefined);
-                finish(lastUsedLabel);
+                finish("Last Used");
               } else {
                 this.setAgentModel(agent.name, `${choice.providerID}/${choice.modelID}`);
                 finish(modelDisplayLabel(choice));
