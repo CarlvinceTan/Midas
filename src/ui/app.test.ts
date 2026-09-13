@@ -4,7 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme as initPiTheme } from "@earendil-works/pi-coding-agent";
 import { stripAnsi } from "../lib/ansi.ts";
 import { initTheme } from "../theme/theme.ts";
-import { submitAction, WorkingIndicator } from "./app.ts";
+import { submitAction, ensureDispatcherOnSubmit, WorkingIndicator } from "./app.ts";
 
 initPiTheme(undefined, false);
 initTheme(undefined);
@@ -70,4 +70,32 @@ test("commands keep their existing routing in every mode", () => {
       );
     }
   }
+});
+
+test("a multitask submission ensures the dispatcher is running", () => {
+  let calls = 0;
+  ensureDispatcherOnSubmit(true, () => { calls += 1; });
+  assert.equal(calls, 1);
+});
+
+test("a normal submission never touches the dispatcher", () => {
+  let calls = 0;
+  ensureDispatcherOnSubmit(false, () => { calls += 1; });
+  assert.equal(calls, 0);
+});
+
+test("repeated multitask submissions keep exactly one dispatcher leader", () => {
+  // The real sync is idempotent; this models it so the submission path cannot
+  // start a duplicate loop when a leader already holds the lease.
+  let leading = false;
+  let starts = 0;
+  const ensure = (): void => {
+    if (leading) return;
+    leading = true;
+    starts += 1;
+  };
+  ensureDispatcherOnSubmit(true, ensure);
+  ensureDispatcherOnSubmit(true, ensure);
+  ensureDispatcherOnSubmit(true, ensure);
+  assert.equal(starts, 1);
 });

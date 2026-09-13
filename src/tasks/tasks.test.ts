@@ -350,3 +350,12 @@ test("tasks view uses inline icons, independent merge badges and worktree groupi
   view.handleInput("\t");
   assert.match(view.render(160).join("\n"), /Not allocated/);
 });
+
+test("tasks view empty state is mode-aware and never prints a shell command", () => {
+  const normal = stripTerminalSequences(new TasksView(() => {}).render(200).join("\n"));
+  const multitask = stripTerminalSequences(new TasksView(() => {}, true).render(200).join("\n"));
+  assert.ok(!normal.includes("midas task add"), `normal empty state leaked a command: ${normal}`);
+  assert.ok(!multitask.includes("midas task add"), `multitask empty state leaked a command: ${multitask}`);
+  assert.match(normal, /No tasks/);
+  assert.match(multitask, /created automatically/);
+});

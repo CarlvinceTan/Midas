@@ -126,6 +126,16 @@ export function submitAction(input: {
   return input.editing ? "requeue" : "queue";
 }
 
+/**
+ * Multitask drives the board from submitted prompts, so every submission keeps
+ * the runner alive. `ensure` is expected to be idempotent: it returns early when
+ * this session already leads the dispatch lease and retries when another session
+ * holds it, so repeated submissions never start a duplicate loop.
+ */
+export function ensureDispatcherOnSubmit(multitask: boolean, ensure: () => void): void {
+  if (multitask) ensure();
+}
+
 interface LoginEntry {
   providerId: string;
   providerName: string;
@@ -1610,8 +1620,9 @@ export class MidasApp {
     this.editingQueue = undefined;
     this.editor.addToHistory(trimmed);
     this.editor.setText("");
+    const multitask = this.activeAgent === ORCHESTRATOR_AGENT;
     const action = submitAction({
-      multitask: this.activeAgent === ORCHESTRATOR_AGENT,
+      multitask,
       runActive: this.isRunActive(),
       isCommand: trimmed.startsWith("/"),
       editing: editing !== undefined,
@@ -1663,6 +1674,10 @@ export class MidasApp {
       }
     }
     this.maybeGenerateTitle(true, trimmed);
+    // Multitask keeps the board runner alive from submissions: retry the
+    // idempotent sync so a session that lost the dispatch lease takes over
+    // without ever starting a second loop.
+    ensureDispatcherOnSubmit(multitask, () => this.syncDispatcher());
     const prompt =
       editing && editing.prompt.text === trimmed ? editing.prompt : this.preparePrompt(trimmed, imageAttachments);
     if (action === "steer") {
@@ -3447,7 +3462,7 @@ export class MidasApp {
   }
 
   private openTasks(): void {
-    const view = new TasksView(() => this.closeOverlay());
+    const view = new TasksView(() => this.closeOverlay(), this.activeAgent === ORCHESTRATOR_AGENT);
     let board: TaskBoard | undefined;
     try { board = new TaskBoard(this.options.cwd); }
     catch { view.error = "Tasks require an existing Git repository. No repository was created."; }
