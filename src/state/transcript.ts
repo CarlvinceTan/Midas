@@ -1,4 +1,4 @@
-import type { AssistantMessage, Message, Part, Permission, Session } from "@opencode-ai/sdk";
+import type { AssistantMessage, Message, Part, Permission, Session, UserMessage } from "@opencode-ai/sdk";
 
 export type ToolStatus = "pending" | "running" | "completed" | "error";
 
@@ -138,6 +138,9 @@ function toMessageView(info: Message): MessageView {
   return {
     id: info.id,
     role: "user",
+    // Remember which agent/mode sent this, so its prompt card keeps that mode's
+    // colour even after multitask is toggled.
+    agent: (info as UserMessage).agent,
     cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
     created: info.time?.created,
@@ -325,12 +328,13 @@ export class Transcript {
    * admitted through opencode's v2 input queue. Marked `steer` so it folds into
    * the live run; `tagSteers` removes it once the server's own message lands.
    */
-  addLocalUserMessage(text: string, steer = true): string {
+  addLocalUserMessage(text: string, steer = true, agent?: string): string {
     const id = `local_user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const part: TextView = { kind: "text", id: `${id}_p`, text };
     const view: MessageView = {
       id,
       role: "user",
+      ...(agent ? { agent } : {}),
       cost: 0,
       tokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
       created: Date.now(),

@@ -49,7 +49,7 @@ export class RunView implements Component {
     private getPad: () => number,
     private cwd: string,
     private options: RunViewOptions,
-    private borderColor: (text: string) => string,
+    private borderColorFor: (agent?: string) => (text: string) => string,
     private ui: TUI,
   ) {
     this.run = run;
@@ -113,7 +113,8 @@ export class RunView implements Component {
         .join("\n")
         .trim();
       if (text) {
-        const component = new UserPromptCard(text, pad, this.borderColor);
+        // Keep the border colour of the mode this prompt was sent in.
+        const component = new UserPromptCard(text, pad, this.borderColorFor(prompt.agent));
         lines.push(...component.render(width));
         promptRendered = true;
       }

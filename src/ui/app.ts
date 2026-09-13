@@ -214,7 +214,7 @@ class TranscriptMessages implements Component {
     private options: TranscriptOptions,
     private getPad: () => number,
     private cwd: string,
-    private borderColor: (text: string) => string,
+    private borderColorFor: (agent?: string) => (text: string) => string,
     private ui: TUI,
   ) {}
 
@@ -263,7 +263,7 @@ class TranscriptMessages implements Component {
       seen.add(run.id);
       let view = this.runViews.get(run.id);
       if (!view) {
-        view = new RunView(run, this.getPad, this.cwd, this.options, this.borderColor, this.ui);
+        view = new RunView(run, this.getPad, this.cwd, this.options, this.borderColorFor, this.ui);
         this.runViews.set(run.id, view);
       } else {
         view.setRun(run);
@@ -673,12 +673,12 @@ export class MidasApp {
     }
     const thinking = typeof options.settings.defaultThinkingLevel === "string" ? options.settings.defaultThinkingLevel : "medium";
     this.thinkingLevel = thinking;
-    // Resolved lazily so switching agents (multitask on/off) repaints the frame
-    // and existing prompt cards without recreating the transcript view.
-    const borderColor = (text: string): string =>
-      this.activeAgent === ORCHESTRATOR_AGENT
-        ? theme().fg("multitask", text)
-        : theme().getThinkingBorderColor(this.currentThinking())(text);
+    // Prompt cards keep the border colour of the mode they were sent in, so a
+    // per-agent resolver is used instead of the currently active mode.
+    const borderColorFor = (agent?: string): ((text: string) => string) =>
+      agent === ORCHESTRATOR_AGENT
+        ? (text) => theme().fg("multitask", text)
+        : (text) => theme().getThinkingBorderColor(this.currentThinking())(text);
 
     const fullscreen = options.settings.tuiMode !== "regular";
     const terminal = new ProcessTerminal();
@@ -708,7 +708,7 @@ export class MidasApp {
     this.tui.setClearOnShrink?.(true);
 
     this.editor = new Editor(this.tui, getEditorTheme(), { paddingX: this.editorPadding() });
-    this.editor.borderColor = borderColor;
+    this.editor.borderColor = borderColorFor(this.activeAgent);
     this.shellCwd = options.cwd;
     this.editor.onSubmit = (text, imageAttachments) => void this.handleSubmit(text, imageAttachments);
     this.editor.onChange = (text: string) => {
@@ -751,7 +751,7 @@ export class MidasApp {
       this.transcriptOptions,
       () => rowPad(options.cwd),
       options.cwd,
-      borderColor,
+      borderColorFor,
       this.tui,
     );
     // pi seeds the context slot from the branch on startup; mirror that with
@@ -2262,7 +2262,7 @@ export class MidasApp {
    */
   private steerPrompt(prompt: QueuedPrompt): void {
     // Show the steer immediately; the v2 queue does not always echo it back.
-    const localId = this.options.controller.transcript.addLocalUserMessage(prompt.text);
+    const localId = this.options.controller.transcript.addLocalUserMessage(prompt.text, true, this.activeAgent);
     this.pendingSteers.push({ text: prompt.text, at: Date.now(), localId });
     void this.sendPrompt(prompt.text, prompt.attachments);
   }
