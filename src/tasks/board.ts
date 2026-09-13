@@ -70,6 +70,16 @@ function validScope(value: unknown): value is string[] {
 }
 
 /**
+ * True when `pid` names a live process. `EPERM` means the process exists but is
+ * not ours, which still counts as alive; any other signal error is not.
+ */
+function processAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/**
  * Blocking git. Reserved for one-time setup (resolving the board directory) and
  * tests; runtime worktree/merge/validation operations must use `gitAsync` so a
  * slow `git` subprocess can never stall the TUI event loop.
@@ -106,10 +116,21 @@ export class TaskBoard {
     if (!/^[a-zA-Z0-9-]+$/.test(name)) throw new Error("Invalid lock name");
     mkdirSync(this.directory, { recursive: true });
     const path = join(this.directory, `${name}.lock`);
+    const locked = (): never => {
+      throw new Error(`Operation locked: ${path}. If interrupted, stop its worker and check processes before manually removing this lock.`);
+    };
     try { mkdirSync(path); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      throw new Error(`Operation locked: ${path}. If interrupted, stop its worker and check processes before manually removing this lock.`);
+      // A dead owner on this host can never release the lock, so take it over.
+      // A lock held by a live process, or one we cannot prove dead (foreign
+      // host, missing/malformed owner), stays fail-closed.
+      let owner: { pid?: unknown; host?: unknown } | undefined;
+      try { owner = JSON.parse(readFileSync(join(path, "owner.json"), "utf8")) as typeof owner; }
+      catch { owner = undefined; }
+      if (!owner || owner.host !== hostname() || typeof owner.pid !== "number" || processAlive(owner.pid)) locked();
+      rmSync(path, { recursive: true, force: true });
+      mkdirSync(path);
     }
     writeFileSync(join(path, "owner.json"), JSON.stringify({ pid: process.pid, host: hostname(), started: new Date().toISOString() }));
     return () => rmSync(path, { recursive: true });

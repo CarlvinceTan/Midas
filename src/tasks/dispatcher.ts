@@ -29,6 +29,24 @@ export interface DispatcherOptions {
    */
   output?: OutputSink;
   onEvent?: (message: string) => void;
+  /** Merge runner override (tests only). Defaults to `mergeTask`. */
+  merge?: (board: TaskBoard, id: string, output?: OutputSink) => Promise<void>;
+  /** Clock override (tests only). Defaults to `Date.now`. */
+  now?: () => number;
+  /** First backoff after a fresh pending reason. Default 5s. */
+  backoffBaseMs?: number;
+  /** Ceiling for repeated identical pending reasons. Default 60s. */
+  backoffCapMs?: number;
+}
+
+/** A completed task whose merge is waiting on a reason, with its retry state. */
+interface PendingMerge {
+  /** Last reason surfaced to the user; an unchanged reason is never re-emitted. */
+  reason: string;
+  /** Consecutive mergeTask attempts that deferred for `reason`. */
+  deferrals: number;
+  /** `now()` before which the next mergeTask attempt is skipped. */
+  nextAttemptAt: number;
 }
 
 /**
@@ -40,6 +58,7 @@ export interface DispatcherOptions {
 export class TaskDispatcher {
   private active = new Map<string, Promise<void>>();
   private controllers = new Map<string, AbortController>();
+  private pending = new Map<string, PendingMerge>();
   private timer?: ReturnType<typeof setInterval>;
   private release?: () => void;
   private ticking?: Promise<void>;
@@ -105,13 +124,30 @@ export class TaskDispatcher {
   }
 
   private async integrate(): Promise<void> {
+    const runMerge = this.options.merge ?? mergeTask;
     for (const task of this.board.read().tasks) {
       try {
         const latest = this.board.get(task.id);
         if (latest.status === "completed" && latest.merge === "not-merged") {
-          await mergeTask(this.board, task.id, this.options.output);
-          const after = this.board.get(task.id);
-          if (after.merge === "merged") this.options.onEvent?.(`${task.id}: merged into ${after.target}`);
+          const now = this.now();
+          const pending = this.pending.get(task.id);
+          if (pending && now < pending.nextAttemptAt) {
+            // An unchanged pending reason is backing off; do not retry every tick.
+          } else {
+            await runMerge(this.board, task.id, this.options.output);
+            const after = this.board.get(task.id);
+            if (after.merge === "merged") {
+              this.pending.delete(task.id);
+              this.options.onEvent?.(`${task.id}: merged into ${after.target}`);
+            } else if (after.mergeBlocked) {
+              this.recordPending(task.id, after.mergeBlocked, now);
+            } else {
+              // The reason cleared without merging; drop the tracked state.
+              this.pending.delete(task.id);
+            }
+          }
+        } else {
+          this.pending.delete(task.id);
         }
         if (this.options.cleanup !== false) {
           const after = this.board.get(task.id);
@@ -125,6 +161,28 @@ export class TaskDispatcher {
         this.options.onEvent?.(`${task.id}: autonomous step failed — ${message}`);
       }
     }
+  }
+
+  private now(): number {
+    return this.options.now?.() ?? Date.now();
+  }
+
+  /** Exponential backoff for repeated identical pending reasons, capped. */
+  private backoffMs(deferrals: number): number {
+    const base = this.options.backoffBaseMs ?? 5000;
+    const cap = this.options.backoffCapMs ?? 60000;
+    return Math.min(base * 2 ** Math.max(0, deferrals - 1), cap);
+  }
+
+  /**
+   * Surface a task's pending merge reason exactly once, then back off repeated
+   * identical deferrals. A new reason re-emits and resets the backoff.
+   */
+  private recordPending(id: string, reason: string, now: number): void {
+    const previous = this.pending.get(id);
+    const deferrals = previous && previous.reason === reason ? previous.deferrals + 1 : 1;
+    this.pending.set(id, { reason, deferrals, nextAttemptAt: now + this.backoffMs(deferrals) });
+    if (deferrals === 1) this.options.onEvent?.(`${id}: merge pending — ${reason}`);
   }
 
   private dispatchReady(): void {
