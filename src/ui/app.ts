@@ -2195,8 +2195,7 @@ export class MidasApp {
     const text = steering.map((item) => item.text).join("\n\n");
     const attachments = steering.flatMap((item) => item.attachments);
     this.pendingSteers.push({ text, at: Date.now() });
-    const preview = steering.map((item) => item.text.replace(/\s+/g, " ").trim()).join(" | ").slice(0, 60);
-    this.flash(`Steering: ${preview}`);
+    // The steered message appears in the transcript; no toast for it.
     void this.sendPrompt(text, attachments);
   }
 
@@ -2228,7 +2227,7 @@ export class MidasApp {
     const prompt = this.preparePrompt(trimmed);
     this.editor.addToHistory(trimmed);
     this.editor.setText("");
-    this.steerPrompt(prompt, trimmed);
+    this.steerPrompt(prompt);
   }
 
   /**
@@ -2236,9 +2235,9 @@ export class MidasApp {
    * `pendingSteers` so consecutive steers are all tracked and folded into the
    * live run once their transcript messages land.
    */
-  private steerPrompt(prompt: QueuedPrompt, preview: string): void {
+  private steerPrompt(prompt: QueuedPrompt): void {
     this.pendingSteers.push({ text: prompt.text, at: Date.now() });
-    this.flash(`Steering: ${preview.replace(/\s+/g, " ").trim().slice(0, 60)}`);
+    // The steered message appears in the transcript; no toast for it.
     void this.sendPrompt(prompt.text, prompt.attachments);
   }
 
