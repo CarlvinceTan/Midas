@@ -63,7 +63,7 @@ import { SearchPicker } from "./components/search-picker.ts";
 import { readDraft, writeDraft, type StoredDraft } from "../lib/drafts.ts";
 import { readSessionState, writeSessionState, type StoredBash } from "../lib/session-state.ts";
 import { resolveCdTarget } from "../lib/shell.ts";
-import { agentCallerLabel, groupAgentNames, selectableAgentNames, BOARD_WORKER_AGENT, DEFAULT_INTERACTIVE_AGENT, ORCHESTRATOR_AGENT } from "../lib/agents.ts";
+import { agentCallerLabel, agentSettingsRows, groupAgentNames, selectableAgentNames, BOARD_WORKER_AGENT, DEFAULT_INTERACTIVE_AGENT, ORCHESTRATOR_AGENT } from "../lib/agents.ts";
 import { listSkills, loadPiSettings, piAgentDir, readAuthedProviders, readLastSelectedModel, removeAuthedProvider, rowPad, thinkingLevelFor, updateGlobalSetting, updateModelThinkingLevel, writeLastSelectedModel, type PiSettings, type SkillEntry, midasConfigDir, midasProjectDir, agentsGlobalDir, agentsProjectDir } from "../config/pi.ts";
 import { loadCustomCommands, renderCommandTemplate, type CustomCommand } from "../config/commands.ts";
 import { spawn } from "node:child_process";
@@ -2513,13 +2513,11 @@ export class MidasApp {
     }
     const overrides = this.agentModelMap();
     const byName = new Map(this.agentCatalog.map((agent) => [agent.name, agent]));
-    const agents = groupAgentNames(this.agentCatalog).flatMap((names, group) =>
-      names.flatMap((name) => {
-        const agent = byName.get(name);
-        return agent ? [{ agent, group: String(group) }] : [];
-      }),
-    );
-    const items = agents.map(({ agent, group }) => {
+    const agents = agentSettingsRows(this.agentCatalog).flatMap(({ name, label, group }) => {
+      const agent = byName.get(name);
+      return agent ? [{ agent, label, group }] : [];
+    });
+    const items = agents.map(({ agent, label, group }) => {
       const configured = agent.model ? `${agent.model.providerID}/${agent.model.modelID}` : undefined;
       const selected = this.resolveModelRef(overrides[agent.name] ?? configured);
       const callerLabel = agentCallerLabel(this.agentCatalog, agent.name);
@@ -2532,7 +2530,7 @@ export class MidasApp {
             : "Default (global model)";
       return {
         id: `agent:${agent.name}`,
-        label: capitalize(agent.name),
+        label,
         currentValue: selected ? modelDisplayLabel(selected) : defaultLabel,
         group,
         submenu: (_current: string, done: (value?: string) => void) => {

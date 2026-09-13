@@ -1,3 +1,5 @@
+import { capitalize } from "./text.ts";
+
 /** One ordered permission rule from opencode's agent config. */
 export interface AgentPermissionRule {
   permission: string;
@@ -109,4 +111,29 @@ function agentGroup(agent: AgentLike): number {
   // a subagent here even though its mode is `primary`.
   if (SUBAGENT_AGENTS.has(agent.name) || agent.mode !== "primary") return 1;
   return 0;
+}
+
+/** Single section id shared by every `/agents` row, so none is set apart. */
+export const AGENT_SETTINGS_GROUP = "agents";
+
+/** A `/agents` overlay row: one flat section, internals alongside the rest. */
+export interface AgentSettingsRow {
+  name: string;
+  /** Plain capitalized label, styled exactly like every other agent row. */
+  label: string;
+  /** Identical for all rows, so SettingsList inserts no divider between them. */
+  group: string;
+}
+
+/**
+ * Rows for the `/agents` overlay. The entry/subagent/internal ordering still
+ * comes from `groupAgentNames`, but the sections are flattened into one so
+ * opencode internals (compaction/summary/title) render as ordinary selectable
+ * rows instead of a detached utility block. The startup header keeps using
+ * `groupAgentNames` directly and is unaffected.
+ */
+export function agentSettingsRows(agents: AgentLike[]): AgentSettingsRow[] {
+  return groupAgentNames(agents)
+    .flat()
+    .map((name) => ({ name, label: capitalize(name), group: AGENT_SETTINGS_GROUP }));
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agentCallerLabel, agentCallers, canInvokeAgent, groupAgentNames, selectableAgentNames, type AgentLike } from "./agents.ts";
+import { agentCallerLabel, agentCallers, agentSettingsRows, canInvokeAgent, groupAgentNames, selectableAgentNames, type AgentLike } from "./agents.ts";
 
 const rule = (permission: string, pattern: string, action: string) => ({ permission, pattern, action });
 
@@ -89,4 +89,35 @@ test("groupAgentNames orders entry points, subagents, then internals", () => {
 
 test("selectableAgentNames excludes the board-only task agent", () => {
   assert.deepEqual(selectableAgentNames(agents), ["main", "orchestrator"]);
+});
+
+test("agentSettingsRows puts internals in one flat, unstyled section", () => {
+  const rows = agentSettingsRows([
+    { name: "title", mode: "primary" },
+    { name: "explore", mode: "subagent" },
+    { name: "orchestrator", mode: "primary" },
+    { name: "compaction", mode: "primary" },
+    { name: "summary", mode: "primary" },
+    { name: "advisor", mode: "subagent" },
+    { name: "main", mode: "primary" },
+    { name: "task", mode: "primary" },
+  ]);
+  // Internals sit among the other agents, not in a detached block.
+  assert.deepEqual(
+    rows.map((row) => row.name),
+    ["main", "orchestrator", "advisor", "explore", "task", "compaction", "summary", "title"],
+  );
+  for (const name of ["compaction", "summary", "title"]) {
+    assert.ok(
+      rows.some((row) => row.name === name),
+      `${name} is a row in /agents`,
+    );
+  }
+  // One shared group => SettingsList inserts no blank separator between rows.
+  assert.equal(new Set(rows.map((row) => row.group)).size, 1);
+  // Plain capitalized labels: no muted/dim ANSI wrapper or per-row special case.
+  for (const row of rows) {
+    assert.equal(row.label, row.name.charAt(0).toUpperCase() + row.name.slice(1));
+    assert.ok(!row.label.includes("\u001b"), `${row.name} label is not styled/dimmed`);
+  }
 });
