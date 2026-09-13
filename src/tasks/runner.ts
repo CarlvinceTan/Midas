@@ -17,8 +17,13 @@ async function checks(task: Task, cwd: string): Promise<void> {
   }
 }
 
-export type Worker = (task: Task, attempt: Attempt, onSession: (id: string) => void, signal?: AbortSignal) => Promise<void>;
-const worker: Worker = async (task, attempt, onSession, signal) => {
+/** Steer text sent to a running worker when its task contract changes. */
+export function revisionNotice(task: Task): string {
+  return `Task ${task.id} was updated while you were working. Re-read its contract from the board (\`midas task list\`) and adjust your work to match.\n\nUpdated title: ${task.title}\nUpdated instructions:\n${task.instructions}`;
+}
+
+export type Worker = (task: Task, attempt: Attempt, onSession: (id: string) => void, signal?: AbortSignal, onRevision?: (cb: (task: Task) => void) => void) => Promise<void>;
+const worker: Worker = async (task, attempt, onSession, signal, onRevision) => {
   const server = await startServer({ cwd: attempt.worktree, configFile: midasConfigFile(attempt.worktree) });
   let session: Session | undefined;
   const abort = new AbortController();
@@ -31,6 +36,15 @@ const worker: Worker = async (task, attempt, onSession, signal) => {
     session = await server.client.session.create({ query: { directory: attempt.worktree }, body: { title: `${task.id}: ${task.title}` } }) as unknown as Session;
     if (!session?.id) throw new Error("Backend did not create a worker session");
     onSession(session.id);
+    // An edited contract is steered into the live worker so it can re-review and
+    // adapt instead of finishing against a stale brief.
+    onRevision?.((updated) => {
+      if (!session || abort.signal.aborted) return;
+      void server.client.session.prompt({
+        path: { id: session.id }, query: { directory: attempt.worktree }, signal: abort.signal,
+        body: { agent: BOARD_WORKER_AGENT, parts: [{ type: "text", text: revisionNotice(updated) }] },
+      }).catch(() => undefined);
+    });
     const events = await server.client.event.subscribe({ signal: abort.signal });
     void (async () => {
       for await (const event of events.stream) {
@@ -58,15 +72,31 @@ const worker: Worker = async (task, attempt, onSession, signal) => {
   }
 };
 
-export async function runTask(board: TaskBoard, id: string, execute: Worker = worker, signal?: AbortSignal): Promise<void> {
+export interface RunOptions {
+  /** How often to poll for contract edits to steer into the worker. Default 2s. */
+  revisionPollMs?: number;
+}
+
+export async function runTask(board: TaskBoard, id: string, execute: Worker = worker, signal?: AbortSignal, options: RunOptions = {}): Promise<void> {
   board.get(id);
   const unlock = board.lock(`task-${id}`);
   const previousAttempts = board.get(id).attempts.length;
+  let lastRevision = board.get(id).revision ?? 1;
+  let notifyRevision: ((task: Task) => void) | undefined;
+  const watcher = setInterval(() => {
+    if (!notifyRevision) return;
+    try {
+      const latest = board.get(id);
+      const revision = latest.revision ?? 1;
+      if (revision !== lastRevision) { lastRevision = revision; notifyRevision(latest); }
+    } catch { /* task removed; ignore */ }
+  }, options.revisionPollMs ?? 2000);
+  watcher.unref?.();
   try {
     const attempt = await board.prepare(id);
     const task = board.get(id);
     board.update(id, (t) => { t.detail = "Worker running"; });
-    await execute(task, attempt, (session) => board.update(id, (t) => { t.attempts.at(-1)!.session = session; }), signal);
+    await execute(task, attempt, (session) => board.update(id, (t) => { t.attempts.at(-1)!.session = session; }), signal, (cb) => { notifyRevision = cb; });
     await assertHead(attempt);
     board.update(id, (t) => { t.detail = "Validating"; });
     const tree = await snapshot(attempt.worktree);
@@ -96,7 +126,7 @@ export async function runTask(board: TaskBoard, id: string, execute: Worker = wo
     }
     if (current.attempts.length > previousAttempts) board.update(id, (t) => { t.status = "blocked"; t.detail = String(error); });
     throw error;
-  } finally { unlock(); }
+  } finally { clearInterval(watcher); unlock(); }
 }
 
 async function snapshot(cwd: string): Promise<string> {

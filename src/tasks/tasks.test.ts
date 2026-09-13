@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { Event } from "@opencode-ai/sdk";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { TaskBoard, git, scopesOverlap } from "./board.ts";
-import { runTask, mergeTask, cleanupTask } from "./runner.ts";
+import { runTask, mergeTask, cleanupTask, revisionNotice } from "./runner.ts";
 import { TaskDispatcher, defaultTaskConcurrency } from "./dispatcher.ts";
 import { taskCli } from "./cli.ts";
 import { pathToFileURL } from "node:url";
@@ -224,6 +224,22 @@ test("dispatcher merges completed work onto the checked-out branch", async (t) =
   await dispatcher.drain();
   assert.equal(git(cwd, "show", "main:result.txt"), "done");
   assert.equal(board.get(task.id).merge, "merged");
+});
+
+test("editing a running task notifies its worker once with the new contract", async (t) => {
+  const { board } = fixture(t);
+  const task = board.add(contract);
+  const notices: string[] = [];
+  await runTask(board, task.id, async (_task, attempt, _session, _signal, onRevision) => {
+    onRevision?.((updated) => notices.push(revisionNotice(updated)));
+    board.edit(task.id, { title: "Revised", instructions: "new brief" });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    writeFileSync(join(attempt.worktree, "result.txt"), "done");
+  }, undefined, { revisionPollMs: 5 });
+  assert.equal(board.get(task.id).status, "completed");
+  assert.equal(notices.length, 1);
+  assert.match(notices[0]!, /Revised/);
+  assert.match(notices[0]!, /new brief/);
 });
 
 test("pause aborts a running worker and can be resumed", async (t) => {
