@@ -13,7 +13,7 @@ import { pathToFileURL } from "node:url";
 import { eventSessionId } from "../opencode/session.ts";
 import { findImagePaths, readImageAttachment } from "../lib/attachments.ts";
 import { RoundedDialogFrame, PanelOverlay } from "../ui/rounded-frame.ts";
-import { Toast } from "../ui/components/toast.ts";
+import { Toast, TOAST_STYLES, type ToastLevel } from "../ui/components/toast.ts";
 import { TasksView, taskIcon } from "../ui/components/tasks-view.ts";
 import { QueuedMessages } from "../ui/components/queued-messages.ts";
 
@@ -624,12 +624,32 @@ test("dragged screenshot paths become readable image attachments", (t) => {
 });
 
 test("toast renders one styled line at the requested width", () => {
-  const toast = new Toast("Reloaded!", "\x1b[42m\x1b[30m");
+  const toast = new Toast("Reloaded!", "success");
   const lines = toast.render(20);
   assert.equal(lines.length, 1);
   assert.ok(lines[0]!.startsWith("\x1b[42m\x1b[30m "));
   assert.match(stripTerminalSequences(lines[0]!), /Reloaded!/);
   assert.equal(stripTerminalSequences(lines[0]!).length, 20);
+});
+
+test("each toast level renders its own fixed background and foreground", () => {
+  const cases: Array<{ level: ToastLevel; style: string }> = [
+    { level: "success", style: "\x1b[42m\x1b[30m" },
+    { level: "warning", style: "\x1b[43m\x1b[30m" },
+    { level: "error", style: "\x1b[41m\x1b[97m" },
+  ];
+  const backgrounds = new Set<string>();
+  for (const { level, style } of cases) {
+    assert.equal(TOAST_STYLES[level], style, `${level} style`);
+    const line = new Toast("Heads up", level).render(20)[0]!;
+    assert.ok(line.startsWith(`${style} `), `${level} should open with ${JSON.stringify(style)}`);
+    // The toast resets at the end so its colour cannot bleed into the terminal.
+    assert.ok(line.endsWith("\x1b[0m"), `${level} should reset`);
+    backgrounds.add(style.slice(0, 5));
+  }
+  // All three levels use distinct background colours and never the inverse style.
+  assert.equal(backgrounds.size, 3);
+  assert.ok(!backgrounds.has("\x1b[7m"));
 });
 
 test("multitask shows as a title on the input border", () => {

@@ -37,7 +37,7 @@ import { RunView } from "./components/run-view.ts";
 import { setMcpServerNames, toolLiveText } from "./components/tool-call.ts";
 import { QueuedMessages } from "./components/queued-messages.ts";
 import { FooterComponent, formatCwdForFooter, type FooterData } from "./components/footer.ts";
-import { Toast } from "./components/toast.ts";
+import { Toast, type ToastLevel } from "./components/toast.ts";
 import { PermissionDialog, type PermissionResponse } from "./components/permission-dialog.ts";
 import { QuestionDialog } from "./components/question-dialog.ts";
 import { ModelPicker, modelDisplayLabel, modelDisplayParts } from "./components/model-picker.ts";
@@ -48,7 +48,6 @@ import { upsertMidasSession } from "../lib/session-store.ts";
 import { StatsView } from "./components/stats-view.ts";
 import { TasksView } from "./components/tasks-view.ts";
 import { TaskBoard, gitAsync } from "../tasks/board.ts";
-import { defaultTaskConcurrency } from "../tasks/dispatcher.ts";
 import { removeTask } from "../tasks/runner.ts";
 import { VoiceController, composeVoiceText, defaultVoiceCommand } from "../voice/stt.ts";
 import { SessionHeader, StartupHeader } from "./components/startup-header.ts";
@@ -1604,14 +1603,7 @@ export class MidasApp {
     const next = args === "on" ? ORCHESTRATOR_AGENT : args === "off" ? DEFAULT_AGENT : this.activeAgent === ORCHESTRATOR_AGENT ? DEFAULT_AGENT : ORCHESTRATOR_AGENT;
     if (!this.agentChoices.includes(next)) { this.fail(`Agent '${next}' is unavailable. Check agent configuration and restart Midas.`); return; }
     this.setActiveAgent(next);
-    if (next === ORCHESTRATOR_AGENT) this.flash(`Multitask on · up to ${this.taskConcurrency()} workers`);
-  }
-
-  /** Configured board worker limit (clamped) or the machine-tuned default. */
-  private taskConcurrency(): number {
-    const configured = this.options.settings.taskConcurrency;
-    if (typeof configured === "number" && Number.isInteger(configured) && configured > 0) return Math.min(configured, 16);
-    return defaultTaskConcurrency();
+    if (next === ORCHESTRATOR_AGENT) this.success("Multitask Activated!");
   }
 
   /**
@@ -1864,7 +1856,7 @@ export class MidasApp {
           return;
         }
         if (this.commandWouldInterrupt(name)) {
-          this.flash(`/${name} can't run while the agent is working. Wait for it to finish, or press Esc to abort.`);
+          this.warn(`/${name} can't run while the agent is working. Wait for it to finish, or press Esc to abort.`);
           return;
         }
       }
@@ -2220,7 +2212,7 @@ export class MidasApp {
     if (!item) return;
     const shell = this.shellCommand(item.text);
     if (!shell && item.text.startsWith("/")) {
-      this.flash("Command queued until the run settles");
+      this.warn("Command queued until the run settles");
       return;
     }
     // Only the top item leaves the queue.
@@ -2717,7 +2709,7 @@ export class MidasApp {
       },
       (level: string) => {
         updateGlobalSetting("defaultThinkingLevel", level);
-        this.flash(`Default thinking: ${level}`);
+        this.success(`Default thinking: ${level}`);
       },
       () => this.closeOverlay(),
     );
@@ -2727,7 +2719,7 @@ export class MidasApp {
   /** Per-agent model configuration, e.g. give the title agent a fast model. */
   private openAgents(): void {
     if (this.agentCatalog.length === 0) {
-      this.flash("No agents available");
+      this.warn("No agents available");
       return;
     }
     const overrides = this.agentModelMap();
@@ -2816,7 +2808,7 @@ export class MidasApp {
       undefined,
       (level: string) => {
         this.setAgentThinkingLevel(agent, level);
-        this.flash(`${capitalize(agent)} · ${modelDisplayLabel(model)} · ${level}`);
+        this.success(`${capitalize(agent)} · ${modelDisplayLabel(model)} · ${level}`);
         this.openAgents();
       },
       () => {},
@@ -2925,7 +2917,7 @@ export class MidasApp {
         const text = value === "last" ? this.lastMessageText() : this.sessionText();
         this.closeOverlay();
         if (!text.trim()) {
-          this.flash("Nothing to copy");
+          this.warn("Nothing to copy");
           return;
         }
         copyToClipboard(text).then(
@@ -2968,23 +2960,23 @@ export class MidasApp {
     return out.join("\n\n");
   }
 
-  /** Transient top-right toast; neutral (inverse) unless an error/success style. */
-  private flash(message: string, durationMs = 1500): void {
-    this.toast(message, "\x1b[7m", durationMs);
-  }
-
   /** Errors are transient red toasts, not transcript output. */
   private fail(message: string): void {
-    this.toast(message, "\x1b[41m\x1b[97m", 4000);
+    this.toast(message, "error", 4000);
+  }
+
+  /** Guard, limit, empty-state or usage message: transient yellow toast. */
+  private warn(message: string): void {
+    this.toast(message, "warning", 2500);
   }
 
   /** Success confirmation, e.g. "Reloaded!": green background, black text. */
   private success(message: string): void {
-    this.toast(message, "\x1b[42m\x1b[30m", 2500);
+    this.toast(message, "success", 2500);
   }
 
   /** Show a transient toast in the terminal's top-right corner. */
-  private toast(message: string, style: string, durationMs: number): void {
+  private toast(message: string, level: ToastLevel, durationMs: number): void {
     const text = message.replace(/\s+/g, " ").trim();
     if (!text) return;
     this.toastHandle?.hide();
@@ -2992,7 +2984,7 @@ export class MidasApp {
     const columns = this.tui.terminal.columns || 80;
     const width = Math.max(4, Math.min(text.length + 4, columns - 2));
     try {
-      this.toastHandle = this.tui.showOverlay(new Toast(text, style), {
+      this.toastHandle = this.tui.showOverlay(new Toast(text, level), {
         anchor: "top-right",
         margin: 1,
         width,
@@ -3031,7 +3023,7 @@ export class MidasApp {
       this.resetStats();
       this.showContext = false;
       this.recordMidasSession();
-      this.flash("New session");
+      this.success("New session");
     } catch (error) {
       this.fail(error instanceof Error ? error.message : String(error));
     }
@@ -3044,7 +3036,8 @@ export class MidasApp {
       const done = await this.options.controller.compact(model.providerID, model.modelID);
       this.liveContext.clear();
       this.contextDisplay.clear();
-      this.flash(done ? "Session compacted" : "Nothing to compact");
+      if (done) this.success("Session compacted");
+      else this.warn("Nothing to compact");
     } catch (error) {
       this.fail(error instanceof Error ? error.message : String(error));
     }
@@ -3058,7 +3051,7 @@ export class MidasApp {
       cwd: this.options.cwd,
       onNew: (directory) => {
         if (busy()) {
-          this.flash("Can't start a new session while the agent is working");
+          this.warn("Can't start a new session while the agent is working");
           return;
         }
         this.closeOverlay();
@@ -3066,7 +3059,7 @@ export class MidasApp {
       },
       onResume: (session) => {
         if (busy()) {
-          this.flash("Can't resume a session while the agent is working");
+          this.warn("Can't resume a session while the agent is working");
           return;
         }
         this.closeOverlay();
@@ -3137,7 +3130,7 @@ export class MidasApp {
       }
     }
     if (!last) {
-      this.flash("Nothing to undo");
+      this.warn("Nothing to undo");
       return;
     }
     const text = last.parts
@@ -3157,7 +3150,7 @@ export class MidasApp {
     editorState.cursorVisible = true;
     if (text) this.editor.setText(text);
     this.tui.requestRender();
-    this.flash("Undid last prompt");
+    this.success("Undid last prompt");
   }
 
   private openStats(): void {
@@ -3249,7 +3242,7 @@ export class MidasApp {
       }
       this.recordMidasSession();
       this.tui.requestRender();
-      this.flash(`Continuing ${label} session in Midas`);
+      this.success(`Continuing ${label} session in Midas`);
     } catch (error) {
       this.fail(error instanceof Error ? error.message : String(error));
     }
@@ -3294,7 +3287,7 @@ export class MidasApp {
       this.recordMidasSession();
       this.resetStats();
       this.showContext = this.hasContextUsage();
-      this.flash("Resumed session");
+      this.success("Resumed session");
     } catch (error) {
       this.fail(error instanceof Error ? error.message : String(error));
     }
@@ -3355,10 +3348,10 @@ export class MidasApp {
           try {
             if (status === "connected") {
               await this.options.controller.disconnectMcp(name);
-              this.flash(`Disconnected ${name}`);
+              this.success(`Disconnected ${name}`);
             } else {
               await this.options.controller.connectMcp(name);
-              this.flash(`Connected ${name}`);
+              this.success(`Connected ${name}`);
             }
             this.setMcpNames(await this.options.controller.mcpServerNames());
           } catch (error) {
@@ -3405,7 +3398,7 @@ export class MidasApp {
         entries.push({ providerId: provider.id, providerName: provider.name, methodIndex, method });
       });
     }
-    if (entries.length === 0) return this.flash("No login methods available");
+    if (entries.length === 0) return this.warn("No login methods available");
 
     // pi-style first step: pick the authentication method, then the provider.
     const hasOauth = entries.some((entry) => entry.method.type === "oauth");
@@ -3447,7 +3440,7 @@ export class MidasApp {
       });
     }
     if (options.length === 0) {
-      return this.flash(authType === "oauth" ? "No account providers available" : "No API key providers available");
+      return this.warn(authType === "oauth" ? "No account providers available" : "No API key providers available");
     }
     const picker = new OptionPicker(
       options,
@@ -3483,7 +3476,7 @@ export class MidasApp {
         try {
           await this.options.controller.addCustomProvider(id, name, (values.baseURL ?? "").trim(), (values.apiKey ?? "").trim());
           await this.loadRest();
-          this.flash(`Added ${name}`);
+          this.success(`Added ${name}`);
         } catch (error) {
           this.fail(error instanceof Error ? error.message : String(error));
         }
@@ -3537,7 +3530,7 @@ export class MidasApp {
         void (async () => {
           try {
             await this.options.controller.setApiKey(providerID, key.trim(), metadata);
-            this.flash(`Logged in to ${providerName}`);
+            this.success(`Logged in to ${providerName}`);
           } catch (error) {
             this.fail(error instanceof Error ? error.message : String(error));
           }
@@ -3559,10 +3552,10 @@ export class MidasApp {
       if (auth.url) openExternal(auth.url);
       if (auth.method === "auto") {
         await this.options.controller.oauthCallback(providerID, method, undefined, inputs);
-        this.flash(`Logged in to ${providerName}`);
+        this.success(`Logged in to ${providerName}`);
         return;
       }
-      this.flash(`${providerName}: ${auth.instructions || "complete login in the browser"}`);
+      this.warn(`${providerName}: ${auth.instructions || "complete login in the browser"}`);
       const dialog = new PromptDialog(
         "Authorization code: ",
         "code",
@@ -3571,7 +3564,7 @@ export class MidasApp {
           void (async () => {
             try {
               await this.options.controller.oauthCallback(providerID, method, code.trim(), inputs);
-              this.flash(`Logged in to ${providerName}`);
+              this.success(`Logged in to ${providerName}`);
             } catch (error) {
               this.fail(error instanceof Error ? error.message : String(error));
             }
@@ -3587,14 +3580,14 @@ export class MidasApp {
 
   private openLogout(): void {
     const authed = readAuthedProviders();
-    if (authed.length === 0) return this.flash("No stored provider credentials");
+    if (authed.length === 0) return this.warn("No stored provider credentials");
     const picker = new OptionPicker(
       authed.map((id) => ({ label: id, value: id })),
       (id) => {
         this.closeOverlay();
         try {
           removeAuthedProvider(id);
-          this.flash(`Logged out of ${id}`);
+          this.success(`Logged out of ${id}`);
         } catch (error) {
           this.fail(error instanceof Error ? error.message : String(error));
         }
@@ -3734,10 +3727,10 @@ export class MidasApp {
   private openTasks(): void {
     let board: TaskBoard | undefined;
     // Actions mutate the shared board; the overlay's 100ms poll picks up the new
-    // state, and failures surface as a flash instead of closing the panel.
+    // state, and failures surface as a toast instead of closing the panel.
     const control = (run: (b: TaskBoard) => void): void => {
       if (!board) return;
-      try { run(board); } catch (error) { this.flash(error instanceof Error ? error.message : String(error)); }
+      try { run(board); } catch (error) { this.fail(error instanceof Error ? error.message : String(error)); }
       this.tui.requestRender();
     };
     // Board control belongs to the multitask workflow. The default `main` agent
@@ -3756,7 +3749,7 @@ export class MidasApp {
             remove: (id) => {
               if (!board) return;
               void removeTask(board, id)
-                .catch((error) => this.flash(error instanceof Error ? error.message : String(error)))
+                .catch((error) => this.fail(error instanceof Error ? error.message : String(error)))
                 .finally(() => this.tui.requestRender());
             },
           }
