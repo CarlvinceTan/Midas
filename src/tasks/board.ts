@@ -36,6 +36,8 @@ export interface Task extends Contract {
   requestedAction?: "pause" | "cancel";
   detail?: string;
   mergedCommit?: string;
+  /** Machine-readable reason the last merge attempt was deferred (e.g. wrong branch, overlapping edits). */
+  mergeBlocked?: string;
 }
 export interface Board { version: 1; tasks: Task[] }
 
