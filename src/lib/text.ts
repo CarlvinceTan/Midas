@@ -12,14 +12,13 @@ export interface ShellCommand {
 
 /**
  * Parse a leading `! ` (or `!! ` to exclude from context) shell command.
- * A bare `! ` yields an empty command so the caller can ignore it; normal text
- * returns undefined.
+ * Only a bang at the very start activates shell mode: any leading whitespace
+ * makes it ordinary text. A bare `! ` yields an empty command so the caller can
+ * ignore it; normal text returns undefined.
  */
 export function parseShellCommand(text: string): ShellCommand | undefined {
-  // Only strip leading whitespace so a bare `! ` (empty command) is preserved.
-  const leading = text.trimStart();
-  if (leading.startsWith("!! ")) return { command: leading.slice(3).trim(), exclude: true };
-  if (leading.startsWith("! ")) return { command: leading.slice(2).trim(), exclude: false };
+  if (text.startsWith("!! ")) return { command: text.slice(3).trim(), exclude: true };
+  if (text.startsWith("! ")) return { command: text.slice(2).trim(), exclude: false };
   return undefined;
 }
 

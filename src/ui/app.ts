@@ -1504,8 +1504,9 @@ export class MidasApp {
    * a real shell command, then the active thinking level.
    */
   private applyEditorBorderColor(text: string = this.editor.getText()): void {
-    const start = text.trimStart();
-    const bash = start.startsWith("! ") || start.startsWith("!! ");
+    // Only a bang at the very start is shell mode; a leading space keeps it a
+    // normal prompt (and the thinking border), matching `parseShellCommand`.
+    const bash = text.startsWith("! ") || text.startsWith("!! ");
     this.editor.borderColor = this.voiceActive
       ? (value: string) => theme().fg("accent", value)
       : bash
@@ -1729,13 +1730,13 @@ export class MidasApp {
       await this.runSlashCommand(commandText);
       return;
     }
-    const shell = this.shellCommand(trimmed);
+    const shell = this.shellCommand(text);
     if (shell) {
       if (!shell.command) return;
       // Shell commands queue like normal messages: while a run is active, Enter
       // holds them until it settles. cmd+enter steers them (runs them now).
       if (this.isRunActive()) {
-        const queued: QueuedPrompt = { text: trimmed, attachments: [] };
+        const queued: QueuedPrompt = { text, attachments: [] };
         if (editing) this.enqueueAt(editing.index, queued);
         else this.enqueue(queued);
         return;
@@ -2109,8 +2110,9 @@ export class MidasApp {
   private steerTyped(text: string): void {
     const trimmed = text.trim();
     if (!trimmed) return;
-    // `!` shell commands steer by running immediately, clearing the input.
-    const shell = this.shellCommand(trimmed);
+    // `!` shell commands steer by running immediately, clearing the input. The
+    // bang must be at the very start, so a leading space is a normal prompt.
+    const shell = this.shellCommand(text);
     if (shell) {
       this.editor.addToHistory(trimmed);
       this.editor.setText("");
@@ -2121,7 +2123,7 @@ export class MidasApp {
     // With no active run there is nothing to steer into, and commands cannot
     // steer at all; both keep their normal Enter routing.
     if (!this.isRunActive() || trimmed.startsWith("/")) {
-      void this.handleSubmit(trimmed);
+      void this.handleSubmit(text);
       return;
     }
     // Resolve image chips before clearing the editor.
@@ -2442,9 +2444,9 @@ export class MidasApp {
     if (matchesKey(data, "super+enter")) {
       // cmd+enter steers: typed text first, otherwise the earliest queued
       // follow-up. With neither, let the key fall through unchanged.
-      const text = this.editor.getExpandedText().trim();
-      if (text) {
-        this.steerTyped(text);
+      const raw = this.editor.getExpandedText();
+      if (raw.trim()) {
+        this.steerTyped(raw);
         return { consume: true };
       }
       if (this.isRunActive() && this.queue.length > 0) {
