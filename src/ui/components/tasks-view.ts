@@ -15,7 +15,14 @@ export class TasksView implements Component {
   private mode: "groups" | "worktrees" = "groups";
   private selected = 0;
   private details = false;
-  constructor(private onCancel: () => void) {}
+  /**
+   * `multitask` selects the empty-state copy: multitask creates tasks from
+   * submitted requests, so it must not point the user at a shell command.
+   */
+  constructor(
+    private onCancel: () => void,
+    private multitask = false,
+  ) {}
   invalidate(): void {}
   handleInput(data: string): void {
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) return this.onCancel();
@@ -31,7 +38,13 @@ export class TasksView implements Component {
     this.selected = Math.max(0, Math.min(this.selected, sorted.length - 1));
     const lines: string[] = [];
     if (this.error) lines.push(t.fg("error", safe(this.error)));
-    else if (!sorted.length) lines.push("No tasks. Add one with: midas task add contract.json");
+    else if (!sorted.length) {
+      lines.push(
+        this.multitask
+          ? "No tasks yet. Tasks are created automatically as requests are sent."
+          : "No tasks yet.",
+      );
+    }
     const start = Math.max(0, this.selected - 3);
     let lastGroup: string | undefined;
     sorted.slice(start, start + 7).forEach((task, i) => {
