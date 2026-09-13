@@ -30,7 +30,8 @@ import { fileURLToPath } from "node:url";
 import { findImagePaths, readImageAttachment, type PromptAttachment } from "../lib/attachments.ts";
 import type { AgentChoice, AuthMethod, AuthPrompt, CommandChoice, SessionController, ModelChoice } from "../opencode/session.ts";
 import { loadCachedAgentStats, readAgentStats, refreshAgentStats } from "../opencode/agent-stats.ts";
-import type { Session } from "@opencode-ai/sdk";
+import type { OpencodeClient, Session } from "@opencode-ai/sdk";
+import type { OpencodeClient as OpencodeV2Client } from "@opencode-ai/sdk/v2";
 import { Transcript, type MessageView, type PartView } from "../state/transcript.ts";
 import { computeRuns, formatSeconds, liveRunId } from "./run-model.ts";
 import { RunView } from "./components/run-view.ts";
@@ -50,9 +51,14 @@ import { TasksView } from "./components/tasks-view.ts";
 import { TaskBoard, gitAsync } from "../tasks/board.ts";
 import { removeTask } from "../tasks/runner.ts";
 import { VoiceController, composeVoiceText, defaultVoiceCommand } from "../voice/stt.ts";
+import { SpeechController, defaultSpeechCommand } from "../speech/controller.ts";
+import { looksLikeChitChat } from "../speech/gate.ts";
 import { SessionHeader, StartupHeader } from "./components/startup-header.ts";
 import { OptionPicker } from "./components/option-picker.ts";
 import { PromptDialog } from "./components/prompt-dialog.ts";
+import { PasswordDialog } from "./components/password-dialog.ts";
+import { RemoteManager } from "../remote/manager.ts";
+import { hashPassword } from "../remote/auth.ts";
 import { SPINNER_FRAMES } from "./components/tool-call.ts";
 import { FramedEditorDock, PanelOverlay, RoundedDialogFrame } from "./rounded-frame.ts";
 import { BlankLine, PaddedBlock, createChatViewport } from "./layout.ts";
@@ -150,8 +156,8 @@ export function voiceToggle(args: string, current: boolean): boolean | undefined
 }
 
 /**
- * Title drawn into the input frame's top rule. Voice dictation (Listening)
- * outranks the orchestrator's Multitask mode; with both off there is no title.
+ * Title drawn into the input frame's top rule. Voice dictation outranks the
+ * orchestrator's Multitask mode; with both off there is no title.
  */
 /**
  * Model-ref precedence for an agent: a session `/model` choice, then a specific
@@ -176,17 +182,47 @@ export function resolveSlashName(names: string[], name: string): string {
   return fuzzyFilter(names, name, (candidate) => candidate)[0] ?? name;
 }
 
-export function voiceFrameTitle(input: { voice: boolean; orchestrator: boolean }): string | undefined {
+export function voiceFrameTitle(input: { voice: boolean; ready: boolean; orchestrator: boolean }): string | undefined {
   // Multitask is indicated by the tomato frame colour, not a title.
-  return input.voice ? "Listening" : undefined;
+  if (!input.voice) return undefined;
+  // Until the helper confirms it is listening, a model may still be downloading.
+  return input.ready ? "Voice: Listening" : "Voice: Loading";
+}
+
+/** Frame title for the PersonaPlex `/speech` mode, matching the `/voice` shape. */
+export function speechFrameTitle(input: { speech: boolean; ready: boolean; orchestrator: boolean }): string | undefined {
+  if (!input.speech) return undefined;
+  // PersonaPlex warms its model on first use; until then show Loading.
+  return input.ready ? "Speech: Listening" : "Speech: Loading";
 }
 
 /**
- * Esc leaves voice mode only while listening and with no autocomplete menu
- * open, so the same key can still dismiss the menu or abort a run otherwise.
+ * Title drawn into the input frame's top rule. `/speech` outranks `/voice` (they
+ * are mutually exclusive), and both outrank the orchestrator's Multitask mode.
  */
-export function exitVoiceOnEscape(input: { voiceActive: boolean; escape: boolean; autocomplete: boolean }): boolean {
-  return input.voiceActive && input.escape && !input.autocomplete;
+export function inputFrameTitle(input: {
+  voice: boolean;
+  speech: boolean;
+  ready: boolean;
+  orchestrator: boolean;
+}): string | undefined {
+  return (
+    speechFrameTitle({ speech: input.speech, ready: input.ready, orchestrator: input.orchestrator }) ??
+    voiceFrameTitle({ voice: input.voice, ready: input.ready, orchestrator: input.orchestrator })
+  );
+}
+
+/**
+ * Esc leaves voice/speech mode only while listening and with no autocomplete
+ * menu open, so the same key can still dismiss the menu or abort a run otherwise.
+ */
+export function exitVoiceOnEscape(input: {
+  voiceActive: boolean;
+  speechActive?: boolean;
+  escape: boolean;
+  autocomplete: boolean;
+}): boolean {
+  return (input.voiceActive || input.speechActive === true) && input.escape && !input.autocomplete;
 }
 
 interface LoginEntry {
@@ -202,6 +238,8 @@ export interface AppOptions {
   settings: PiSettings;
   model?: ModelChoice;
   agent?: string;
+  /** The opencode server clients, for /remote (absent in headless runs). */
+  opencode?: { client: OpencodeClient; clientV2?: OpencodeV2Client };
 }
 
 interface TranscriptOptions {
@@ -616,18 +654,32 @@ export class MidasApp {
   private activeAgent = DEFAULT_AGENT;
   /** True while `/voice` microphone dictation streams into the input. */
   private voiceActive = false;
+  /** False from activation until the STT helper reports it is listening. */
+  private voiceReady = false;
   private voiceBase = "";
   /** Session-local per-agent model overrides chosen with `/model`. */
   private sessionAgentModels = new Map<string, string>();
   /**
-   * Speech-to-text backend seam. A later task wires the real controller; with
-   * no controller installed the mode still toggles and repaints cleanly.
+   * Long-lived speech-to-text backend. It is preloaded in the background and
+   * paused (not killed) when voice stops, so re-entering `/voice` is instant.
    */
-  private voiceController?: { start(): void; stop(): void };
+  private voiceController?: VoiceController;
+  /** True while `/speech` runs the PersonaPlex conversation loop. */
+  private speechActive = false;
+  /** False from activation until the PersonaPlex helper reports it is warmed. */
+  private speechReady = false;
+  /**
+   * Long-lived PersonaPlex backend. The helper process is preloaded and paused
+   * (not killed) between turns; the last few spoken turns form the gate context.
+   */
+  private speechController?: SpeechController;
+  private speechContext: string[] = [];
   /** Branch checked out in the primary worktree, shown in the pinned header. */
   private currentBranch: string | undefined;
   private branchTimer?: ReturnType<typeof setInterval>;
   private agentInitialized = false;
+  /** Lazily created by /remote so runs without an opencode server stay clean. */
+  private remote?: RemoteManager;
   private mcpNames: string[] = [];
   private commands: CommandChoice[] = [];
   private customCommands: CustomCommand[] = [];
@@ -669,7 +721,9 @@ export class MidasApp {
 
   constructor(private options: AppOptions) {
     this.hideThinking = options.settings.hideThinkingBlock ?? true;
-    this.model = options.model;
+    // Seed the last-selected model from disk before the first paint so the
+    // footer never flashes "No Model" while the catalogs are being fetched.
+    this.model = options.model ?? this.initialModel();
     // Restore a resumed session's stored title; a fresh session stays untitled.
     this.title = usableSessionTitle(options.controller.title);
     this.skillEntries = listSkills(this.options.cwd);
@@ -737,6 +791,12 @@ export class MidasApp {
         path: formatCwdForFooter(this.options.cwd.replace(/[\x00-\x1f\x7f]/g, "?"), homedir()),
         branch: this.currentBranch,
         resources: `${this.skillNames.length} skills • ${this.mcpNames.length} mcps`,
+        remoteActive: this.remote?.active ?? false,
+        onRemoteClick: () => {
+          const url = this.remote?.url;
+          if (url) this.copyRemoteLink(url);
+          else this.warn("Remote is off. Run /remote to start it.");
+        },
         hidden: !this.terminalTitleEnabled(),
       }),
       () => rowPad(options.cwd),
@@ -854,6 +914,21 @@ export class MidasApp {
     // background so `/stats` opens instantly with near-current numbers.
     const warmStats = setTimeout(() => void this.refreshStatsInBackground(), 5000);
     warmStats.unref?.();
+    // Warm the speech model in the background so `/voice` starts instantly.
+    if (this.voicePreloadEnabled()) {
+      const warmVoice = setTimeout(() => {
+        if (!this.voiceActive) this.ensureVoiceController().preload();
+      }, 2500);
+      warmVoice.unref?.();
+    }
+    // Warm PersonaPlex so `/speech` starts instantly. Opt-in: the 8-bit model
+    // holds ~9.5 GB, so it is off unless `speechPreload` is set.
+    if (this.speechPreloadEnabled()) {
+      const warmSpeech = setTimeout(() => {
+        if (!this.speechActive) this.ensureSpeechController().preload();
+      }, 4000);
+      warmSpeech.unref?.();
+    }
     this.statsTimer = setInterval(() => void this.refreshStatsInBackground(), 10 * 60_000);
     this.statsTimer.unref?.();
     this.options.controller.transcript.subscribe(() => {
@@ -997,6 +1072,23 @@ export class MidasApp {
     });
   }
 
+  /**
+   * Model to show before any catalog request returns. The last-selected model
+   * is a synchronous disk read, so the first frame paints the right name
+   * instead of "No Model"; `loadRest` upgrades it to the catalogue entry (for
+   * the display name, cost and context limit) once models arrive.
+   */
+  private initialModel(): ModelChoice | undefined {
+    const last = readLastSelectedModel();
+    if (!last) return undefined;
+    return {
+      providerID: last.providerID,
+      modelID: last.modelID,
+      name: last.name ?? last.modelID,
+      providerName: last.providerID,
+    };
+  }
+
   /** Fast startup path: agents + custom commands, so the header fills instantly. */
   private async loadAgents(): Promise<void> {
     this.customCommands = loadCustomCommands(this.options.cwd);
@@ -1019,8 +1111,28 @@ export class MidasApp {
     this.tui.requestRender();
   }
 
-  /** Slower catalogs (commands, MCPs, models) load after the first render. */
+  /** Slower catalogs (models, commands, MCPs) load after the first render. */
   private async loadRest(): Promise<void> {
+    // Models first: the footer's name and context window come from the catalog,
+    // so resolve it (and repaint) before the other catalogs.
+    try {
+      this.models = await this.withTimeout(this.options.controller.listModels());
+    } catch {
+      this.models = [];
+    }
+    // The constructor already seeded the last-selected model; only fall back to
+    // opencode's configured default when there is none.
+    if (!this.model) {
+      const fallback = await this.withTimeout(this.options.controller.defaultModel());
+      if (fallback) {
+        const known = this.models.find((m) => m.providerID === fallback.providerID && m.modelID === fallback.modelID);
+        this.model = known ?? { ...fallback, name: fallback.modelID, providerName: fallback.providerID };
+      }
+    }
+    this.handleModelUpdate();
+    this.syncControllerModel();
+    this.tui.requestRender();
+
     try {
       this.commands = (await this.withTimeout(this.options.controller.listCommands())).filter(
         (command) => !HIDDEN_COMMANDS.has(command.name),
@@ -1034,37 +1146,6 @@ export class MidasApp {
     } catch {
       this.setMcpNames([]);
     }
-    try {
-      this.models = await this.withTimeout(this.options.controller.listModels());
-    } catch {
-      this.models = [];
-    }
-    // Prefer the model last used in midas (or pi), then opencode's configured
-    // default, so a launch resumes where the user left off rather than the
-    // provider default.
-    if (!this.model) {
-      const last = readLastSelectedModel();
-      if (last) {
-        const known =
-          this.models.find((m) => m.providerID === last.providerID && m.modelID === last.modelID) ??
-          this.models.find((m) => m.modelID === last.modelID);
-        this.model = known ?? {
-          providerID: last.providerID,
-          modelID: last.modelID,
-          name: last.name ?? last.modelID,
-          providerName: last.providerID,
-        };
-      }
-    }
-    if (!this.model) {
-      const fallback = await this.withTimeout(this.options.controller.defaultModel());
-      if (fallback) {
-        const known = this.models.find((m) => m.providerID === fallback.providerID && m.modelID === fallback.modelID);
-        this.model = known ?? { ...fallback, name: fallback.modelID, providerName: fallback.providerID };
-      }
-    }
-    this.handleModelUpdate();
-    this.syncControllerModel();
     if (this.pendingTitleSource) this.maybeGenerateTitle(true, this.pendingTitleSource);
     this.tui.requestRender();
   }
@@ -1606,8 +1687,79 @@ export class MidasApp {
     if (next === ORCHESTRATOR_AGENT) this.success("Multitask Activated!");
   }
 
+  private remoteManager(): RemoteManager {
+    if (!this.remote) {
+      const opencode = this.options.opencode;
+      if (!opencode) throw new Error("Remote is unavailable in this run mode");
+      this.remote = new RemoteManager({
+        client: opencode.client,
+        clientV2: opencode.clientV2,
+        cwd: this.options.cwd,
+        getPasswordHash: () => loadPiSettings(this.options.cwd).remotePasswordHash,
+        onChange: () => this.tui.requestRender(),
+      });
+    }
+    return this.remote;
+  }
+
   /**
-   * Colour precedence: voice dictation (blue) wins while listening, then a real
+   * `/remote` — expose this opencode server on a temporary public link. Enabling
+   * is global to the process (all sessions are listed), copies the link on first
+   * enable, and toggles off on a second run. `on|off|refresh|status` are explicit.
+   */
+  private toggleRemote(args: string): void {
+    if (args && args !== "on" && args !== "off" && args !== "refresh" && args !== "status") {
+      this.fail("Usage: /remote [on|off|refresh|status]");
+      return;
+    }
+    let manager: RemoteManager;
+    try {
+      manager = this.remoteManager();
+    } catch (error) {
+      this.fail(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (args === "status") {
+      this.warn(manager.active && manager.url ? `Remote on · ${manager.url}` : "Remote off");
+      return;
+    }
+    if (args === "refresh") {
+      if (!manager.active) return this.toggleRemote("on");
+      this.warn("Refreshing remote link…");
+      void manager.refresh().then(
+        (state) => state.url && this.copyRemoteLink(state.url),
+        (error) => this.fail(`Remote refresh failed: ${error instanceof Error ? error.message : String(error)}`),
+      );
+      return;
+    }
+    if (args === "off" || (!args && manager.active)) {
+      void manager.disable().then(() => {
+        this.warn("Remote off");
+        this.tui.requestRender();
+      });
+      return;
+    }
+    if (manager.active && manager.url) return this.copyRemoteLink(manager.url);
+    if (!manager.hasPassword()) {
+      this.fail("Set a Remote password in /settings first, then run /remote");
+      return;
+    }
+    this.warn("Starting remote…");
+    void manager.enable().then(
+      (state) => state.url && this.copyRemoteLink(state.url),
+      (error) => this.fail(`Remote failed: ${error instanceof Error ? error.message : String(error)}`),
+    );
+  }
+
+  private copyRemoteLink(url: string): void {
+    copyToClipboard(url).then(
+      () => this.success("Remote on · link copied"),
+      () => this.warn(`Remote on · ${url}`),
+    );
+  }
+
+  /**
+   * Colour precedence: microphone modes (blue) win while active, then a real
    * shell command, then multitask (tomato), then the active thinking level.
    * Multitask tints the frame; the editable text stays the normal colour.
    */
@@ -1616,7 +1768,7 @@ export class MidasApp {
     // normal prompt (and the thinking border), matching `parseShellCommand`.
     const bash = text.startsWith("! ") || text.startsWith("!! ");
     const multitask = this.activeAgent === ORCHESTRATOR_AGENT;
-    this.editor.borderColor = this.voiceActive
+    this.editor.borderColor = this.voiceActive || this.speechActive
       ? (value: string) => theme().fg("accent", value)
       : bash
         ? (value: string) => theme().fg("bashMode", value)
@@ -1633,25 +1785,44 @@ export class MidasApp {
 
   /**
    * Enter or leave `/voice` dictation. Rebuilds the input frame (title + blue
-   * border) and starts/stops the optional speech controller; the existing input
-   * text is left untouched.
+   * border) and starts/pauses the warm speech controller; the existing input
+   * text is left untouched. The helper is preloaded, so this is near-instant.
    */
   private setVoiceActive(active: boolean): void {
+    // Microphone modes are mutually exclusive: `/speech` would double-open the mic.
+    if (active && this.speechActive) this.setSpeechActive(false);
     this.voiceActive = active;
     if (active) {
       // Keep whatever was typed before voice as a prefix for the transcript.
       this.voiceBase = this.editor.getText();
-      this.voiceController ??= this.createVoiceController();
-      this.voiceController.start();
+      const controller = this.ensureVoiceController();
+      // A preloaded helper is already listening-capable; only a cold first start
+      // shows Loading while the model loads.
+      this.voiceReady = controller.ready;
+      controller.listen();
     } else {
-      this.voiceController?.stop();
+      this.voiceReady = false;
+      this.voiceController?.pause();
     }
     this.applyEditorBorderColor();
     this.mountEditor();
-    this.options.controller.transcript.addNotice(
-      active ? "Voice listening — speak to dictate. Esc to exit." : "Voice dictation off.",
-    );
     this.tui.requestRender();
+  }
+
+  /** Create the helper on first use and keep the same instance for the session. */
+  private ensureVoiceController(): VoiceController {
+    this.voiceController ??= this.createVoiceController();
+    return this.voiceController;
+  }
+
+  /**
+   * Warm the speech model at startup (default). Skipped for a custom
+   * `voiceSttCommand`, which may not speak the warm listen/pause protocol.
+   */
+  private voicePreloadEnabled(): boolean {
+    if (this.options.settings.voicePreload === false) return false;
+    const configured = this.options.settings.voiceSttCommand;
+    return !(typeof configured === "string" && configured.trim());
   }
 
   private createVoiceController(): VoiceController {
@@ -1660,9 +1831,24 @@ export class MidasApp {
     const spec = command ? { command: "/bin/bash", args: ["-lc", command] } : defaultVoiceCommand();
     return new VoiceController({
       ...spec,
-      onText: (committed, partial) => this.applyVoiceTranscript(composeVoiceText(this.voiceBase, committed, partial), ""),
+      onText: (committed, partial) => {
+        if (!this.voiceActive) return;
+        this.applyVoiceTranscript(composeVoiceText(this.voiceBase, committed, partial), "");
+      },
+      onReady: () => {
+        this.voiceReady = true;
+        if (this.voiceActive) this.mountEditor();
+        this.tui.requestRender();
+      },
       onError: (message) => {
+        // A preload failure stays quiet; `/voice` surfaces it when it matters.
+        if (!this.voiceActive) return;
         this.options.controller.transcript.addNotice(`Voice: ${message}`);
+        this.setVoiceActive(false);
+      },
+      onStop: () => {
+        if (!this.voiceActive) return;
+        this.options.controller.transcript.addNotice("Voice: microphone stopped.");
         this.setVoiceActive(false);
       },
     });
@@ -1676,6 +1862,147 @@ export class MidasApp {
   private applyVoiceTranscript(committed: string, partial: string): void {
     this.editor.setText(`${committed}${partial}`);
     this.tui.requestRender();
+  }
+
+  private toggleSpeech(args: string): void {
+    // `/speech` shares `/voice`'s on/off/blank argument shape.
+    const next = voiceToggle(args, this.speechActive);
+    if (next === undefined) { this.fail("Usage: /speech [on|off]"); return; }
+    this.setSpeechActive(next);
+  }
+
+  /**
+   * Enter or leave `/speech`: PersonaPlex listens, then hands clear requests to
+   * the active agent (main, or the orchestrator when Multitask is on) while it
+   * answers everything else itself. The frame turns blue with a Speech title.
+   */
+  private setSpeechActive(active: boolean): void {
+    // Microphone modes are mutually exclusive: `/speech` would double-open the mic.
+    if (active && this.voiceActive) this.setVoiceActive(false);
+    this.speechActive = active;
+    if (active) {
+      const controller = this.ensureSpeechController();
+      this.speechReady = controller.ready;
+      controller.listen();
+      this.options.controller.transcript.addNotice(
+        this.speechReady
+          ? "Speech listening — speak naturally. Esc to exit."
+          : "Speech loading — PersonaPlex may download on first use.",
+      );
+    } else {
+      this.speechReady = false;
+      this.speechContext = [];
+      this.speechController?.pause();
+      this.options.controller.transcript.addNotice("Speech off.");
+    }
+    this.applyEditorBorderColor();
+    this.mountEditor();
+    this.tui.requestRender();
+  }
+
+  /** Create the PersonaPlex helper on first use and keep it for the session. */
+  private ensureSpeechController(): SpeechController {
+    this.speechController ??= this.createSpeechController();
+    return this.speechController;
+  }
+
+  /** Warm PersonaPlex at startup only when explicitly opted in (~9.5 GB). */
+  private speechPreloadEnabled(): boolean {
+    return this.options.settings.speechPreload === true;
+  }
+
+  private createSpeechController(): SpeechController {
+    const configured = this.options.settings.speechCommand;
+    const command = typeof configured === "string" && configured.trim() ? configured.trim() : undefined;
+    const spec = command ? { command: "/bin/bash", args: ["-lc", command] } : defaultSpeechCommand();
+    const voice = this.options.settings.speechVoice;
+    const prompt = this.options.settings.speechPrompt;
+    const env: NodeJS.ProcessEnv = {};
+    if (typeof voice === "string" && voice.trim()) env.SPEECH_VOICE = voice.trim();
+    if (typeof prompt === "string" && prompt.trim()) env.SPEECH_PROMPT = prompt.trim();
+    if (this.options.settings.speechCompile === true) env.SPEECH_COMPILE = "1";
+    return new SpeechController({
+      ...spec,
+      env: Object.keys(env).length > 0 ? env : undefined,
+      onUtterance: (text) => void this.handleSpeechUtterance(text),
+      onAssistant: (text) => {
+        if (!this.speechActive || !text) return;
+        this.options.controller.transcript.addNotice(`Speech: ${text}`);
+      },
+      onReady: () => {
+        this.speechReady = true;
+        if (this.speechActive) this.mountEditor();
+        this.tui.requestRender();
+      },
+      onError: (message) => {
+        // A preload failure stays quiet; `/speech` surfaces it when it matters.
+        if (!this.speechActive) return;
+        this.options.controller.transcript.addNotice(`Speech: ${message}`);
+        this.setSpeechActive(false);
+      },
+      onStop: () => {
+        if (!this.speechActive) return;
+        this.options.controller.transcript.addNotice("Speech: helper stopped.");
+        this.setSpeechActive(false);
+      },
+    });
+  }
+
+  /**
+   * Route one spoken turn: obvious small talk is answered by PersonaPlex, an
+   * `auto` turn is classified by the active model, and a clear request is
+   * delegated. The helper waits for exactly one `respond`/`skip`.
+   */
+  private async handleSpeechUtterance(text: string): Promise<void> {
+    const utterance = text.trim();
+    if (!this.speechActive || !utterance) return;
+    // Show what was heard; ASR is imperfect and this is the user's only cue.
+    this.options.controller.transcript.addNotice(`Speech heard: “${utterance}”`);
+    const context = this.speechContext;
+    // Keep a short rolling context so the gate can resolve follow-ups.
+    this.speechContext = [...this.speechContext, utterance].slice(-6);
+    const mode = this.options.settings.speechDelegate ?? "auto";
+    if (mode === "never" || (mode === "auto" && looksLikeChitChat(utterance))) {
+      this.speechController?.respond();
+      return;
+    }
+    if (mode === "always") {
+      this.delegateSpeech(utterance);
+      return;
+    }
+    const model = this.effectiveModel();
+    const decision = model
+      ? await this.options.controller.assessSpeechIntent(utterance, context, model)
+      : undefined;
+    if (!this.speechActive) return;
+    if (decision?.clear) this.delegateSpeech(decision.request || utterance);
+    else this.speechController?.respond();
+  }
+
+  /**
+   * Hand a spoken request to the active agent through the normal submission
+   * path. Speech is free-form, so it is never treated as a slash command or a
+   * shell line, and it is queued when a run is already active.
+   */
+  private delegateSpeech(text: string): void {
+    const body = text.trim();
+    if (!body) return;
+    this.options.controller.transcript.addNotice(`Speech → ${this.activeAgent}: ${body}`);
+    this.editor.addToHistory(body);
+    if (!this.title) {
+      const heuristic = capitalize(truncateWords(body.replace(/[`*_#>]/g, ""), this.titleMaxWords()));
+      if (heuristic) {
+        this.title = heuristic;
+        this.tui.requestRender();
+      }
+    }
+    this.maybeGenerateTitle(true, body);
+    if (this.activeAgent === ORCHESTRATOR_AGENT) this.syncDispatcher();
+    const prompt = this.preparePrompt(body, []);
+    if (this.isRunActive()) this.enqueue(prompt);
+    else void this.sendPrompt(prompt.text, prompt.attachments);
+    // The helper is holding the turn open; release it now that the agent has it.
+    this.speechController?.skip();
   }
 
   private setThinkingLevel(level: string): void {
@@ -2327,6 +2654,8 @@ export class MidasApp {
         "tasks",
         "multitask",
         "voice",
+        "speech",
+        "remote",
         "reload",
         "mcps",
         "skills",
@@ -2364,6 +2693,8 @@ export class MidasApp {
       { name: "tasks", description: "Task board grouped by feature or worktree" },
       { name: "multitask", description: "Toggle orchestration mode (on/off)" },
       { name: "voice", description: "Dictate into the input with the microphone (on/off)" },
+      { name: "speech", description: "Talk to PersonaPlex, which delegates to the agent (on/off)" },
+      { name: "remote", description: "Share all sessions on a temporary public web link (on/off)" },
       { name: "reload", description: "Reload settings, models and resources" },
       { name: "mcps", description: "Manage MCP servers" },
       { name: "skills", description: "Manage skills" },
@@ -2406,6 +2737,8 @@ export class MidasApp {
     if (name === "tasks") return this.openTasks();
     if (name === "multitask") return this.toggleMultitask(args);
     if (name === "voice") return this.toggleVoice(args);
+    if (name === "speech") return this.toggleSpeech(args);
+    if (name === "remote") return this.toggleRemote(args);
     if (name === "reload") return this.doReload();
     if (name === "mcps") return this.openMcps();
     if (name === "skills") return this.openSkills();
@@ -2522,15 +2855,17 @@ export class MidasApp {
 
   private handleGlobalKey(data: string): { consume?: boolean } | undefined {
     if (this.activeOverlay) return undefined;
-    // Esc leaves voice dictation without also aborting the running agent.
+    // Esc leaves voice/speech mode without also aborting the running agent.
     if (
       exitVoiceOnEscape({
         voiceActive: this.voiceActive,
+        speechActive: this.speechActive,
         escape: matchesKey(data, "escape"),
         autocomplete: this.editor.isShowingAutocomplete(),
       })
     ) {
-      this.setVoiceActive(false);
+      if (this.speechActive) this.setSpeechActive(false);
+      else this.setVoiceActive(false);
       return { consume: true };
     }
     if (matchesKey(data, "up")) {
@@ -2717,7 +3052,7 @@ export class MidasApp {
   }
 
   /** Per-agent model configuration, e.g. give the title agent a fast model. */
-  private openAgents(): void {
+  private openAgents(focusAgent?: string): void {
     if (this.agentCatalog.length === 0) {
       this.warn("No agents available");
       return;
@@ -2738,12 +3073,11 @@ export class MidasApp {
         ? "Last Used"
         : `Default (${agentCallerLabel(this.agentCatalog, agent.name) ?? entryLabels})`;
       const thinking = override ? this.thinkingForAgent(agent.name, override) : undefined;
-      // A specific model reads "Name · level Provider", with the provider dimmer.
+      // A specific model reads "Name · level".
       let currentValue = fallback;
       if (override) {
         const parts = modelDisplayParts(override);
-        const provider = parts.provider ? ` ${theme().fg("dim", parts.provider)}` : "";
-        currentValue = `${parts.name} · ${thinking}${provider}`;
+        currentValue = `${parts.name} · ${thinking}`;
       }
       return {
         id: `agent:${agent.name}`,
@@ -2793,6 +3127,9 @@ export class MidasApp {
       { enableSearch: true },
     );
     this.agentBreadcrumb = undefined;
+    // Returning from a model/thinking choice reopens the list; keep the cursor
+    // on the agent that was just edited instead of jumping back to the top.
+    if (focusAgent) list.selectItem(`agent:${focusAgent}`);
     this.showOverlay(
       new PanelOverlay(() => (this.agentBreadcrumb ? `Agents > ${this.agentBreadcrumb}` : "agents"), new CompactSearchList(list, true)),
       { width: "70%", maxHeight: "70%" },
@@ -2809,10 +3146,10 @@ export class MidasApp {
       (level: string) => {
         this.setAgentThinkingLevel(agent, level);
         this.success(`${capitalize(agent)} · ${modelDisplayLabel(model)} · ${level}`);
-        this.openAgents();
+        this.openAgents(agent);
       },
       () => {},
-      () => this.openAgents(),
+      () => this.openAgents(agent),
     );
     this.showOverlay(picker, { width: "64%", maxHeight: "70%" });
   }
@@ -2853,11 +3190,61 @@ export class MidasApp {
         values: ["on", "off"],
       },
       {
+        id: "remote-password",
+        label: "Remote password",
+        description: "Unlock password for the /remote public link",
+        currentValue: this.options.settings.remotePasswordHash ? "set" : "not set",
+        submenu: (_current: string, done: (value?: string) => void) =>
+          new PasswordDialog(
+            "Remote password: ",
+            (value) => {
+              const trimmed = value.trim();
+              if (!trimmed) {
+                done();
+                return;
+              }
+              const hash = hashPassword(trimmed);
+              (this.options.settings as Record<string, unknown>).remotePasswordHash = hash;
+              updateGlobalSetting("remotePasswordHash", hash);
+              done("set");
+            },
+            () => done(),
+          ),
+      },
+      {
         id: "skill-commands",
         label: "Skill commands",
         description: "Enable skill commands in the slash menu",
         currentValue: this.options.settings.enableSkillCommands === true ? "on" : "off",
         values: ["on", "off"],
+      },
+      {
+        id: "voice-preload",
+        label: "Voice preload",
+        description: "Load the speech model at startup so /voice is instant",
+        currentValue: this.options.settings.voicePreload === false ? "off" : "on",
+        values: ["on", "off"],
+      },
+      {
+        id: "speech-preload",
+        label: "Speech preload",
+        description: "Warm PersonaPlex at startup (~9.5 GB) so /speech is instant",
+        currentValue: this.options.settings.speechPreload === true ? "on" : "off",
+        values: ["on", "off"],
+      },
+      {
+        id: "speech-compile",
+        label: "Speech compile",
+        description: "Compile PersonaPlex kernels for faster replies (longer first warmup)",
+        currentValue: this.options.settings.speechCompile === true ? "on" : "off",
+        values: ["on", "off"],
+      },
+      {
+        id: "speech-delegate",
+        label: "Speech delegation",
+        description: "When /speech hands a spoken request to the coding agent",
+        currentValue: this.options.settings.speechDelegate ?? "auto",
+        values: ["auto", "always", "never"],
       },
     ];
     const list = new SettingsList(
@@ -2881,6 +3268,56 @@ export class MidasApp {
             const enabled = value === "on";
             (this.options.settings as Record<string, unknown>).enableSkillCommands = enabled;
             updateGlobalSetting("enableSkillCommands", enabled);
+            break;
+          }
+          case "voice-preload": {
+            const enabled = value === "on";
+            (this.options.settings as Record<string, unknown>).voicePreload = enabled;
+            updateGlobalSetting("voicePreload", enabled);
+            if (this.voiceActive) break;
+            if (enabled) {
+              if (this.voicePreloadEnabled()) this.ensureVoiceController().preload();
+            } else if (this.voiceController) {
+              // Free the model without disturbing an active voice session.
+              this.voiceController.stop();
+              this.voiceController = undefined;
+              this.voiceReady = false;
+              this.mountEditor();
+            }
+            break;
+          }
+          case "speech-preload": {
+            const enabled = value === "on";
+            (this.options.settings as Record<string, unknown>).speechPreload = enabled;
+            updateGlobalSetting("speechPreload", enabled);
+            if (this.speechActive) break;
+            if (enabled) {
+              this.ensureSpeechController().preload();
+            } else if (this.speechController) {
+              // Free PersonaPlex without disturbing an active speech session.
+              this.speechController.stop();
+              this.speechController = undefined;
+              this.speechReady = false;
+              this.mountEditor();
+            }
+            break;
+          }
+          case "speech-delegate": {
+            (this.options.settings as Record<string, unknown>).speechDelegate = value;
+            updateGlobalSetting("speechDelegate", value);
+            break;
+          }
+          case "speech-compile": {
+            // Compile is fixed at helper start; recreate an idle helper so it applies.
+            const enabled = value === "on";
+            (this.options.settings as Record<string, unknown>).speechCompile = enabled;
+            updateGlobalSetting("speechCompile", enabled);
+            if (this.speechActive || !this.speechController) break;
+            this.speechController.stop();
+            this.speechController = undefined;
+            this.speechReady = false;
+            if (this.speechPreloadEnabled()) this.ensureSpeechController().preload();
+            this.mountEditor();
             break;
           }
         }
@@ -3804,7 +4241,12 @@ export class MidasApp {
     const frame = new RoundedDialogFrame(
       () => Math.min(1, rowPad(this.options.cwd)),
       undefined,
-      voiceFrameTitle({ voice: this.voiceActive, orchestrator: this.activeAgent === ORCHESTRATOR_AGENT }),
+      inputFrameTitle({
+        voice: this.voiceActive,
+        speech: this.speechActive,
+        ready: this.speechActive ? this.speechReady : this.voiceReady,
+        orchestrator: this.activeAgent === ORCHESTRATOR_AGENT,
+      }),
       { top: () => this.historyLabel("up"), bottom: () => this.historyLabel("down") },
     );
     frame.addChild(this.editor);
@@ -3888,7 +4330,9 @@ export class MidasApp {
     this.saveDraftNow();
     this.persistSessionState();
     // The board daemon is detached on purpose; quitting must not kill it.
+    void this.remote?.disable();
     this.voiceController?.stop();
+    this.speechController?.stop();
     if (this.tasksTimer) clearInterval(this.tasksTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
     if (this.timer) clearInterval(this.timer);

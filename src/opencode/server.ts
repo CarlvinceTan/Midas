@@ -8,8 +8,8 @@ export interface ServerOptions {
   port?: number;
   /** Override the opencode binary (default: `opencode` on PATH). */
   bin?: string;
-  /** Extra opencode config file (merged via OPENCODE_CONFIG). */
-  configFile?: string;
+  /** Merged opencode config (passed inline via OPENCODE_CONFIG_CONTENT). */
+  configContent?: string;
   timeoutMs?: number;
 }
 
@@ -40,17 +40,25 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     hostname = "127.0.0.1",
     port = 0,
     bin = process.env.MIDAS_OPENCODE_BIN ?? "opencode",
-    configFile,
+    configContent,
     timeoutMs = 30_000,
   } = options;
 
   const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
   // midas supplies its own context; never inherit Claude Code's global
   // `~/.claude/CLAUDE.md` (or per-project CLAUDE.md) into midas sessions.
+  //
+  // Skills, MCP servers and context are scoped to `~/.midas`, `<cwd>/.midas`
+  // and `<cwd>/.agents` (see `midasOpencodeConfig`): disable opencode's own
+  // `.claude`/`.agents` discovery and project `.opencode` config so nothing
+  // else leaks in.
   const env = {
     ...process.env,
     OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: "1",
-    ...(configFile ? { OPENCODE_CONFIG: configFile } : {}),
+    OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1",
+    OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
+    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+    ...(configContent ? { OPENCODE_CONFIG_CONTENT: configContent } : {}),
   };
 
   const proc = spawn(bin, args, {

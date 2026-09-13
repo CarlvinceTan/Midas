@@ -7,10 +7,6 @@ import {
 } from "@earendil-works/pi-tui";
 import { theme } from "../../theme/theme.ts";
 
-/** Atomic image chips, e.g. `[Image: screenshot.png]`, matching the editor. */
-const IMAGE_MARKER_REGEX = /\[Image: [^\]\n]*\]/g;
-const IMAGE_MARKER_COLOR = "\x1b[33m";
-
 /**
  * Queued follow-ups, anchored above the input box. The queue itself is owned by
  * the app; this reads it at render time so enqueue/dequeue only need a render.
@@ -40,19 +36,10 @@ export class QueuedMessages implements Component {
     const available = Math.max(1, width - pad * 2);
     const ellipsis = "…";
     // `truncateToWidth` resets styling right before the ellipsis, so truncate
-    // without one and append an explicitly dimmed ellipsis instead. Image chips
-    // stay yellow even in the dim preview so they read as the same component.
-    const colorize = (text: string): string => {
-      let out = "";
-      let last = 0;
-      for (const match of text.matchAll(IMAGE_MARKER_REGEX)) {
-        const at = match.index ?? 0;
-        out += t.fg("dim", text.slice(last, at));
-        out += `${IMAGE_MARKER_COLOR}${match[0]}\x1b[39m`;
-        last = at + match[0].length;
-      }
-      return out + t.fg("dim", text.slice(last));
-    };
+    // without one and append an explicitly dimmed ellipsis instead. The whole
+    // preview is muted — image chips included — so it reads as a pending draft;
+    // the sent prompt card in the transcript keeps its yellow chip.
+    const colorize = (text: string): string => t.fg("dim", text);
     const row = (text: string): string => {
       const colored = colorize(text);
       if (visibleWidth(colored) <= available) return prefix + colored;

@@ -4,7 +4,7 @@ import { once } from "node:events";
 import type { Session } from "@opencode-ai/sdk";
 import { TaskBoard, gitAsync, type Task, type Attempt } from "./board.ts";
 import { startServer } from "../opencode/server.ts";
-import { midasConfigFile } from "../config/pi.ts";
+import { midasOpencodeConfig } from "../config/pi.ts";
 import { BOARD_WORKER_AGENT, MERGE_AGENT } from "../lib/agents.ts";
 
 /**
@@ -99,7 +99,7 @@ export function revisionNotice(task: Task): string {
 
 export type Worker = (task: Task, attempt: Attempt, onSession: (id: string) => void, signal?: AbortSignal, onRevision?: (cb: (task: Task) => void) => void, output?: OutputSink) => Promise<void>;
 const worker: Worker = async (task, attempt, onSession, signal, onRevision, output = discardOutput) => {
-  const server = await startServer({ cwd: attempt.worktree, configFile: midasConfigFile(attempt.worktree) });
+  const server = await startServer({ cwd: attempt.worktree, configContent: JSON.stringify(midasOpencodeConfig(attempt.worktree)) });
   let session: Session | undefined;
   const abort = new AbortController();
   if (signal) {
@@ -261,7 +261,7 @@ export type ConflictResolver = (task: Task, cwd: string, output: OutputSink) => 
  * partial resolution still aborts safely.
  */
 const mergeAgentResolve: ConflictResolver = async (task, cwd, output) => {
-  const server = await startServer({ cwd, configFile: midasConfigFile(cwd) });
+  const server = await startServer({ cwd, configContent: JSON.stringify(midasOpencodeConfig(cwd)) });
   const abort = new AbortController();
   const timeout = setTimeout(() => abort.abort(new Error("Merge agent exceeded 20 minutes")), 20 * 60_000);
   let session: Session | undefined;

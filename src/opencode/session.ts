@@ -3,6 +3,7 @@ import type { OpencodeClient as OpencodeV2Client } from "@opencode-ai/sdk/v2";
 import { Transcript, type QuestionView, type SessionPhase } from "../state/transcript.ts";
 import type { PromptAttachment } from "../lib/attachments.ts";
 import { BOARD_WORKER_AGENT, DEFAULT_INTERACTIVE_AGENT, ORCHESTRATOR_AGENT, type AgentPermissionRule } from "../lib/agents.ts";
+import { parseSpeechIntent, speechGatePrompt, type SpeechIntent } from "../speech/gate.ts";
 
 export interface ModelChoice {
   providerID: string;
@@ -657,6 +658,60 @@ export class SessionController {
 
   private helperSessionId: string | undefined;
 
+  /**
+   * Classify a spoken turn as a clear, actionable request (to hand to the coding
+   * agent) or conversation. Runs on a dedicated helper session so it cannot
+   * interleave with title/status generation, and falls back to `undefined` on
+   * any failure so PersonaPlex can still answer.
+   */
+  async assessSpeechIntent(
+    source: string,
+    context: string[],
+    model: { providerID: string; modelID: string },
+    timeoutMs = 4000,
+  ): Promise<SpeechIntent | undefined> {
+    const raw = await this.generateSpeechText(speechGatePrompt(source, context), model, timeoutMs);
+    if (raw === undefined) return undefined;
+    return parseSpeechIntent(raw, source);
+  }
+
+  private speechHelperSessionId: string | undefined;
+
+  private async speechHelperSession(): Promise<string> {
+    if (this.speechHelperSessionId) return this.speechHelperSessionId;
+    const session = (await this.client.session.create({
+      body: {},
+      query: { directory: this.cwd },
+      signal: AbortSignal.timeout(10_000),
+    })) as unknown as Session;
+    this.speechHelperSessionId = session.id;
+    return session.id;
+  }
+
+  private async generateSpeechText(
+    prompt: string,
+    model: { providerID: string; modelID: string },
+    timeoutMs: number,
+  ): Promise<string | undefined> {
+    try {
+      const id = await this.speechHelperSession();
+      const result = (await this.client.session.prompt({
+        path: { id },
+        query: { directory: this.cwd },
+        signal: AbortSignal.timeout(timeoutMs),
+        body: { parts: [{ type: "text", text: prompt }], model, agent: "title" },
+      })) as unknown as { parts?: Array<{ type: string; text?: string }> };
+      const text = (result?.parts ?? [])
+        .filter((part) => part.type === "text" && typeof part.text === "string")
+        .map((part) => part.text!.trim())
+        .filter(Boolean)
+        .join("\n");
+      return text || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async helperSession(): Promise<string> {
     if (this.helperSessionId) return this.helperSessionId;
     const session = (await this.client.session.create({
@@ -691,12 +746,14 @@ export class SessionController {
     return cleanTitle(text, maxWords);
   }
 
-  /** Drop the reusable helper session (e.g. when idle or on directory change). */
+  /** Drop the reusable helper sessions (e.g. when idle or on directory change). */
   disposeHelper(): void {
-    const id = this.helperSessionId;
+    for (const id of [this.helperSessionId, this.speechHelperSessionId]) {
+      if (!id) continue;
+      void this.client.session.delete({ path: { id }, query: { directory: this.cwd } }).catch(() => undefined);
+    }
     this.helperSessionId = undefined;
-    if (!id) return;
-    void this.client.session.delete({ path: { id }, query: { directory: this.cwd } }).catch(() => undefined);
+    this.speechHelperSessionId = undefined;
   }
 
   async listModels(): Promise<ModelChoice[]> {

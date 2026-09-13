@@ -2,7 +2,7 @@
 import { startServer } from "./opencode/server.ts";
 import { SessionController, type ModelChoice } from "./opencode/session.ts";
 import { MidasApp } from "./ui/app.ts";
-import { loadPiSettings, midasConfigFile } from "./config/pi.ts";
+import { loadPiSettings, midasOpencodeConfig } from "./config/pi.ts";
 import { dim } from "./lib/ansi.ts";
 import { taskCli } from "./tasks/cli.ts";
 import { BOARD_WORKER_AGENT } from "./lib/agents.ts";
@@ -101,6 +101,7 @@ Commands:
   /new /compact /sessions   session management
   /tasks                    grouped task board (Tab: groups/worktrees)
   /multitask [on|off]       orchestration + autonomous board runner (default: off)
+  /remote [on|off|refresh]  share all sessions on a temporary public web link
   /voice [on|off]           dictate into the input with the microphone (default: off)
   /reload                   reload settings, models and resources
   /mcps /skills             manage MCP servers and skills
@@ -119,7 +120,7 @@ function parseModel(value: string | undefined): { providerID: string; modelID: s
 }
 
 async function runPrint(cli: Cli): Promise<void> {
-  const server = await startServer({ cwd: cli.cwd, configFile: midasConfigFile(cli.cwd) });
+  const server = await startServer({ cwd: cli.cwd, configContent: JSON.stringify(midasOpencodeConfig(cli.cwd)) });
   const controller = new SessionController({ client: server.client, clientV2: server.clientV2, cwd: cli.cwd });
   try {
     if (cli.session) await controller.resume(cli.session);
@@ -172,7 +173,7 @@ async function runPrint(cli: Cli): Promise<void> {
 }
 
 async function runTui(cli: Cli): Promise<void> {
-  const server = await startServer({ cwd: cli.cwd, configFile: midasConfigFile(cli.cwd) });
+  const server = await startServer({ cwd: cli.cwd, configContent: JSON.stringify(midasOpencodeConfig(cli.cwd)) });
   const controller = new SessionController({ client: server.client, clientV2: server.clientV2, cwd: cli.cwd });
   const settings = loadPiSettings(cli.cwd);
   try {
@@ -185,7 +186,14 @@ async function runTui(cli: Cli): Promise<void> {
       ? { providerID: parseModel(cli.model)!.providerID, modelID: parseModel(cli.model)!.modelID, name: parseModel(cli.model)!.modelID, providerName: parseModel(cli.model)!.providerID }
       : undefined;
 
-    const app = new MidasApp({ controller, cwd: cli.cwd, settings, model: choice, agent: cli.agent });
+    const app = new MidasApp({
+      controller,
+      cwd: cli.cwd,
+      settings,
+      model: choice,
+      agent: cli.agent,
+      opencode: { client: server.client, clientV2: server.clientV2 },
+    });
     // quit() flushes the unsent input synchronously, so the draft survives an
     // accidentally closed terminal (SIGHUP) as well as Ctrl+C / termination.
     process.on("SIGINT", () => app.quit());

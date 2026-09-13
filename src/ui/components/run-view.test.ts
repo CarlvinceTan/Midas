@@ -86,10 +86,38 @@ test("a bash box keeps a single blank row after the prose above it", () => {
   const clean = (line: string): string => stripAnsi(line.replace(/\x1b\][^\x07]*\x07/g, ""));
   const lines = view.render(80).map(clean);
   const textIndex = lines.findIndex((line) => line.includes("done"));
-  const borderIndex = lines.findIndex((line, index) => index > textIndex && /^─+$/.test(line.trim()));
+  const borderIndex = lines.findIndex((line, index) => index > textIndex && /^[╭╰]─+[╮╯]$/.test(line.trim()));
   assert.ok(textIndex >= 0 && borderIndex > textIndex);
   const blanks = lines.slice(textIndex + 1, borderIndex).filter((line) => line.trim() === "").length;
   assert.equal(blanks, 1);
+});
+
+test("a bash box is framed as a rounded rectangle, not bare rules", () => {
+  const runs = computeRuns([
+    message("bashmsg_1", "assistant", [
+      { kind: "bash", id: "b1", command: "ls -la", output: "file-a\n", status: "complete", exitCode: 0, exclude: false },
+    ]),
+  ]);
+  const view = new RunView(
+    runs[0]!,
+    () => 1,
+    "/cwd",
+    { hideThinking: true, expandedTools: false },
+    () => (text) => text,
+    tui,
+  );
+  view.setActive(false);
+  const clean = (line: string): string => stripAnsi(line.replace(/\x1b\][^\x07]*\x07/g, ""));
+  const lines = view.render(80).map(clean);
+
+  assert.ok(lines.some((line) => /^╭─+╮$/.test(line.trim())), "has a rounded top rule");
+  assert.ok(lines.some((line) => /^╰─+╯$/.test(line.trim())), "has a rounded bottom rule");
+  assert.ok(lines.some((line) => line.startsWith("│") && line.endsWith("│")), "has side borders");
+  // The content still renders inside the frame.
+  assert.ok(lines.some((line) => line.includes("$ ls -la")));
+  assert.ok(lines.some((line) => line.includes("file-a")));
+  // No bare `────` rules survive.
+  assert.ok(!lines.some((line) => /^─+$/.test(line.trim())), "no bare rules");
 });
 
 test("a pending steer renders as its own user card, not a Worked block", () => {

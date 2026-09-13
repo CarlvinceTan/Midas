@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -31,25 +31,39 @@ export function agentsProjectDir(cwd: string): string {
 }
 
 /**
- * midas's opencode config file (merged on top of opencode.jsonc by the server).
- * Search order: MIDAS_CONFIG_FILE, project `.midas/midas.jsonc`, global `~/.midas/midas.jsonc`.
+ * The opencode config midas hands to `opencode serve`.
+ *
+ * Sources are scoped to midas's own directories so skills, MCP servers and
+ * context come only from `~/.midas`, `<cwd>/.midas` and `<cwd>/.agents`:
+ *   - `skills`: the `skills/` dir under each root that exists.
+ *   - `instructions`: the `AGENTS.md` under each root that exists.
+ *   - every other key (notably `mcp`): merged from `midas.jsonc`/`midas.json`
+ *     in each root, with `MIDAS_CONFIG_FILE` (if set) applied last.
+ *
+ * opencode's own discovery is turned off separately in `startServer`.
  */
-export function midasConfigFile(cwd: string): string | undefined {
-  const candidates = [
-    process.env.MIDAS_CONFIG_FILE,
-    join(midasProjectDir(cwd), "midas.jsonc"),
-    join(midasProjectDir(cwd), "midas.json"),
+export function midasOpencodeConfig(cwd: string): Record<string, unknown> {
+  const config: Record<string, unknown> = {};
+  const files = [
     join(midasConfigDir(), "midas.jsonc"),
     join(midasConfigDir(), "midas.json"),
+    join(midasProjectDir(cwd), "midas.jsonc"),
+    join(midasProjectDir(cwd), "midas.json"),
+    join(agentsProjectDir(cwd), "midas.jsonc"),
+    join(agentsProjectDir(cwd), "midas.json"),
+    process.env.MIDAS_CONFIG_FILE,
   ].filter((value): value is string => Boolean(value));
-  for (const candidate of candidates) {
-    try {
-      if (statSync(candidate).isFile()) return candidate;
-    } catch {
-      // Not present; try the next candidate.
-    }
+  for (const file of files) {
+    const parsed = readJsonc(file);
+    if (parsed) mergeDeep(config, parsed);
   }
-  return undefined;
+
+  const roots = [midasConfigDir(), midasProjectDir(cwd), agentsProjectDir(cwd)];
+  const skills = roots.map((root) => join(root, "skills")).filter((dir) => existsSync(dir));
+  if (skills.length > 0) config.skills = skills;
+  const instructions = roots.map((root) => join(root, "AGENTS.md")).filter((file) => existsSync(file));
+  if (instructions.length > 0) config.instructions = instructions;
+  return config;
 }
 
 function readJson<T>(path: string): T | undefined {
@@ -58,6 +72,111 @@ function readJson<T>(path: string): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Recursively merge `patch` into `target`; arrays and scalars replace. */
+function mergeDeep(target: Record<string, unknown>, patch: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(patch)) {
+    const current = target[key];
+    if (isPlainObject(current) && isPlainObject(value)) mergeDeep(current, value);
+    else target[key] = value;
+  }
+}
+
+/** Read a `.json`/`.jsonc` file, tolerating comments and trailing commas. */
+function readJsonc(path: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = parseJsonc(readFileSync(path, "utf8"));
+    return isPlainObject(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Parse JSON-with-comments: strips `//` and block comments plus trailing commas
+ * outside of strings. Hand-rolled so midas need not add a JSONC dependency just
+ * to read its own `midas.jsonc`.
+ */
+export function parseJsonc(text: string): unknown {
+  let out = "";
+  let inString = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    const next = text[i + 1];
+    if (inLineComment) {
+      if (ch === "\n") {
+        inLineComment = false;
+        out += ch;
+      }
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === "*" && next === "/") {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (inString) {
+      out += ch;
+      if (ch === "\\") {
+        out += next ?? "";
+        i++;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+    } else if (ch === "/" && next === "/") {
+      inLineComment = true;
+      i++;
+    } else if (ch === "/" && next === "*") {
+      inBlockComment = true;
+      i++;
+    } else {
+      out += ch;
+    }
+  }
+
+  // Drop trailing commas: a comma followed by only whitespace then `}` or `]`.
+  let clean = "";
+  inString = false;
+  for (let i = 0; i < out.length; i++) {
+    const ch = out[i]!;
+    if (inString) {
+      clean += ch;
+      if (ch === "\\") {
+        clean += out[i + 1] ?? "";
+        i++;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      clean += ch;
+      continue;
+    }
+    if (ch === ",") {
+      let j = i + 1;
+      while (j < out.length && /\s/.test(out[j]!)) j++;
+      const following = out[j];
+      if (following === "}" || following === "]") continue;
+    }
+    clean += ch;
+  }
+  return JSON.parse(clean);
 }
 
 /** Transcript/UI row padding is fixed at 1 (not configurable). */
@@ -72,10 +191,26 @@ export interface PiSettings {
   hideThinkingBlock?: boolean;
   /** Command whose stdout streams JSONL STT events for `/voice`. */
   voiceSttCommand?: string;
+  /** Warm the speech model at startup so `/voice` starts instantly (default true). */
+  voicePreload?: boolean;
+  /** Command whose stdin/stdout speak the PersonaPlex helper protocol for `/speech`. */
+  speechCommand?: string;
+  /** Warm the PersonaPlex model at startup so `/speech` is instant (default false; ~9.5 GB). */
+  speechPreload?: boolean;
+  /** PersonaPlex voice preset for `/speech` (default NATM0). */
+  speechVoice?: string;
+  /** PersonaPlex system prompt for `/speech`; defaults to a concise assistant. */
+  speechPrompt?: string;
+  /** Compile PersonaPlex kernels for faster steps after a one-time warmup. */
+  speechCompile?: boolean;
+  /** How a spoken turn reaches the coding agent: auto (model gate), always, never. */
+  speechDelegate?: "auto" | "always" | "never";
   /** Per-agent "Last Used" model ref (`provider/model`), used when no specific override is set. */
   agentLastUsed?: Record<string, string>;
   /** Per-agent reasoning level chosen alongside its specific model. */
   agentThinkingLevels?: Record<string, string>;
+  /** Salted scrypt hash of the /remote password (never the password itself). */
+  remotePasswordHash?: string;
   [key: string]: unknown;
 }
 
@@ -211,9 +346,29 @@ export interface SkillEntry {
   scope: "global" | "local";
 }
 
+/** The `name:` from a `SKILL.md`'s frontmatter, falling back to the folder name. */
+function skillName(skillFile: string, fallback: string): string {
+  try {
+    const match = readFileSync(skillFile, "utf8").match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (match) {
+      const line = match[1]!.split(/\r?\n/).find((entry) => entry.trimStart().toLowerCase().startsWith("name:"));
+      if (line) {
+        const value = line.slice(line.indexOf(":") + 1).trim().replace(/^["']|["']$/g, "");
+        if (value) return value;
+      }
+    }
+  } catch {
+    // Unreadable; fall back to the folder name.
+  }
+  return fallback;
+}
+
 /**
  * Skills visible to midas: global `~/.midas/skills`, project `.midas/skills`,
  * and project `.agents/skills`. The global `~/.agents/skills` dir is not scanned.
+ *
+ * Only folders holding a `SKILL.md` count, named by its frontmatter, matching
+ * opencode's own discovery so the list reflects what the agent can invoke.
  */
 export function listSkills(cwd: string): SkillEntry[] {
   const dirs: Array<{ dir: string; scope: SkillEntry["scope"] }> = [
@@ -230,8 +385,10 @@ export function listSkills(cwd: string): SkillEntry[] {
       continue;
     }
     for (const entry of entries) {
-      if (entry.name.startsWith(".")) continue;
-      const name = entry.name.endsWith(".md") ? entry.name.slice(0, -3) : entry.name;
+      if (entry.name.startsWith(".") || !entry.isDirectory()) continue;
+      const skillFile = join(dir, entry.name, "SKILL.md");
+      if (!existsSync(skillFile)) continue;
+      const name = skillName(skillFile, entry.name);
       if (!byName.has(name)) byName.set(name, { name, path: join(dir, entry.name), scope });
     }
   }

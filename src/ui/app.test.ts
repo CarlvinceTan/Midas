@@ -4,7 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme as initPiTheme } from "@earendil-works/pi-coding-agent";
 import { stripAnsi } from "../lib/ansi.ts";
 import { initTheme } from "../theme/theme.ts";
-import { submitAction, ensureDispatcherOnSubmit, WorkingIndicator, voiceToggle, voiceFrameTitle, exitVoiceOnEscape, pickAgentModelRef, pickAgentThinking, resolveSlashName } from "./app.ts";
+import { submitAction, ensureDispatcherOnSubmit, WorkingIndicator, voiceToggle, voiceFrameTitle, speechFrameTitle, inputFrameTitle, exitVoiceOnEscape, pickAgentModelRef, pickAgentThinking, resolveSlashName } from "./app.ts";
 
 initPiTheme(undefined, false);
 initTheme(undefined);
@@ -105,11 +105,27 @@ test("voice toggles on and off explicitly and flips with no argument", () => {
   assert.equal(voiceToggle("bogus", false), undefined);
 });
 
-test("the Listening title shows only while voice is active", () => {
-  assert.equal(voiceFrameTitle({ voice: true, orchestrator: true }), "Listening");
-  assert.equal(voiceFrameTitle({ voice: true, orchestrator: false }), "Listening");
-  assert.equal(voiceFrameTitle({ voice: false, orchestrator: true }), undefined);
-  assert.equal(voiceFrameTitle({ voice: false, orchestrator: false }), undefined);
+test("the voice title shows Loading then Listening while active", () => {
+  assert.equal(voiceFrameTitle({ voice: true, ready: false, orchestrator: true }), "Voice: Loading");
+  assert.equal(voiceFrameTitle({ voice: true, ready: true, orchestrator: true }), "Voice: Listening");
+  assert.equal(voiceFrameTitle({ voice: true, ready: true, orchestrator: false }), "Voice: Listening");
+  assert.equal(voiceFrameTitle({ voice: false, ready: false, orchestrator: true }), undefined);
+  assert.equal(voiceFrameTitle({ voice: false, ready: true, orchestrator: false }), undefined);
+});
+
+test("the speech title shows Loading then Listening while active", () => {
+  assert.equal(speechFrameTitle({ speech: true, ready: false, orchestrator: true }), "Speech: Loading");
+  assert.equal(speechFrameTitle({ speech: true, ready: true, orchestrator: false }), "Speech: Listening");
+  assert.equal(speechFrameTitle({ speech: false, ready: true, orchestrator: true }), undefined);
+});
+
+test("the input frame title prefers speech over voice", () => {
+  assert.equal(
+    inputFrameTitle({ voice: true, speech: true, ready: true, orchestrator: false }),
+    "Speech: Listening",
+  );
+  assert.equal(inputFrameTitle({ voice: true, speech: false, ready: true, orchestrator: false }), "Voice: Listening");
+  assert.equal(inputFrameTitle({ voice: false, speech: false, ready: true, orchestrator: true }), undefined);
 });
 
 test("agent model precedence: session, override, config, last used", () => {
@@ -136,9 +152,11 @@ test("slash names resolve exactly, then by the top fuzzy match", () => {
   assert.equal(resolveSlashName(names, "zzz"), "zzz");
 });
 
-test("escape exits voice only while listening and not in autocomplete", () => {
+test("escape exits voice or speech only while listening and not in autocomplete", () => {
   assert.equal(exitVoiceOnEscape({ voiceActive: true, escape: true, autocomplete: false }), true);
   assert.equal(exitVoiceOnEscape({ voiceActive: true, escape: true, autocomplete: true }), false);
   assert.equal(exitVoiceOnEscape({ voiceActive: false, escape: true, autocomplete: false }), false);
   assert.equal(exitVoiceOnEscape({ voiceActive: true, escape: false, autocomplete: false }), false);
+  assert.equal(exitVoiceOnEscape({ voiceActive: false, speechActive: true, escape: true, autocomplete: false }), true);
+  assert.equal(exitVoiceOnEscape({ voiceActive: false, speechActive: true, escape: true, autocomplete: true }), false);
 });

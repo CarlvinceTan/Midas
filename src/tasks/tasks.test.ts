@@ -758,6 +758,17 @@ test("queued rows keep the same gutter on the right as on the left", () => {
   assert.ok(row.endsWith("…"));
 });
 
+test("queued image chips are muted like the rest of the preview", () => {
+  const view = new QueuedMessages(() => [{ text: "[Image: shot.png] hello" }]);
+  const line = view.render(80)[1]!;
+  assert.match(line, /\[Image: shot\.png\] hello/);
+  assert.ok(!line.includes("\x1b[33m"), `queued chip should not be yellow: ${JSON.stringify(line)}`);
+  // The whole row uses one muted span, exactly like a plain queued message.
+  const ansi = (text: string): string[] => text.match(/\x1b\[[0-9;]*m/g) ?? [];
+  const plain = new QueuedMessages(() => [{ text: "hello" }]).render(80)[1]!;
+  assert.deepEqual(ansi(line), ansi(plain));
+});
+
 test("panel overlay insets content from the side borders", () => {
   const child = { invalidate() {}, render: () => ["hello", "world"] };
   const panel = new PanelOverlay("Tasks", child);
