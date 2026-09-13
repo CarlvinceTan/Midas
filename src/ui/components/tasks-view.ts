@@ -31,6 +31,18 @@ export function taskIconColor(task: Task): ThemeColor | undefined {
   }
 }
 const safe = (text: string): string => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+/**
+ * Short, scannable form of a deferred-merge reason. The board stores the full
+ * machine-readable cause (which can list every overlapping path), but the row
+ * only has room for the gist; the actions menu's details view keeps the rest.
+ */
+export function shortMergeBlock(reason: string): string {
+  const text = safe(reason).trim();
+  const target = /^target (\S+) is not checked out$/i.exec(text);
+  if (target) return `target ${target[1]} not checked out`;
+  if (/local changes|would be overwritten/i.test(text)) return "local changes overlap";
+  return text;
+}
 /** Number of task rows in the scroll window; group headers are extra and reserved separately. */
 const windowRows = 7;
 
@@ -130,7 +142,11 @@ export class TasksView implements Component {
         const label = group(task);
         if (label !== lastGroup) { lines.push(t.fg("accent", safe(label))); lastGroup = label; }
         const waiting = (task.dependencies ?? []).filter((id) => this.tasks.find((v) => v.id === id)?.merge !== "merged");
-        const status = task.merge === "merged" ? `⤵ merged → ${task.target}` : task.merge === "failed" ? "! merge failed" : task.merge === "integrating" ? "integrating…" : task.status === "completed" ? "not merged" : task.status === "blocked" ? "blocked" : task.status === "cancelled" ? "cancelled" : waiting.length ? `waiting on ${waiting.join(", ")}` : task.status === "new" ? "ready" : task.attempts.at(-1)?.branch ?? "provisioning";
+        // A merge deferred behind dirty/overlapping checkout or the wrong branch
+        // is still actionable, so it gets its own warning status instead of
+        // falling through to the neutral "not merged".
+        const pendingReason = task.merge === "not-merged" && task.status === "completed" && task.mergeBlocked ? shortMergeBlock(task.mergeBlocked) : undefined;
+        const status = pendingReason ? `merge pending — ${pendingReason}` : task.merge === "merged" ? `⤵ merged → ${task.target}` : task.merge === "failed" ? "! merge failed" : task.merge === "integrating" ? "integrating…" : task.status === "completed" ? "not merged" : task.status === "blocked" ? "blocked" : task.status === "cancelled" ? "cancelled" : waiting.length ? `waiting on ${waiting.join(", ")}` : task.status === "new" ? "ready" : task.attempts.at(-1)?.branch ?? "provisioning";
         const icon = taskIcon(task, Math.floor(Date.now() / 100));
         const color = taskIconColor(task);
         // Build the row from a fixed prefix, a flexible title and a fixed status.
@@ -141,10 +157,11 @@ export class TasksView implements Component {
         const statusStyle = (text: string): string => t.fg("muted", text);
         const titleStyle = (text: string): string => t.fg("text", text);
         // The merge-failed `!` is a failure marker, so paint just that glyph red
-        // while the remainder keeps the muted status colour.
+        // while the remainder keeps the muted status colour. A pending merge is
+        // warning-coloured in full: it is deferred, not a failure.
         const statusText = task.merge === "failed"
           ? `${t.fg("error", "!")}${statusStyle(" merge failed")}`
-          : statusStyle(safe(status));
+          : pendingReason ? t.fg("warning", safe(status)) : statusStyle(safe(status));
         const title = titleStyle(safe(task.title));
         const room = width - visibleWidth(prefix) - visibleWidth(gap) - visibleWidth(statusText);
         if (room >= 0) {
