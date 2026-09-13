@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { initTheme as initPiTheme } from "@earendil-works/pi-coding-agent";
 import { initTheme, theme } from "../../theme/theme.ts";
+import { stripAnsi } from "../../lib/ansi.ts";
 import type { Task } from "../../tasks/board.ts";
 import { TasksView, taskIcon, taskIconColor } from "./tasks-view.ts";
 
@@ -99,6 +100,41 @@ test("keeps the full status and ellipsises the title in its own colour", () => {
 
   const wide = view.render(160).find((line) => line.includes("T1"))!;
   assert.ok(wide.includes(title), `full title missing at a wide width: ${wide}`);
+});
+
+/** Visible column where a row's styled title begins. */
+function titleColumn(line: string): number {
+  const at = line.indexOf(theme().getFgAnsi("text"));
+  assert.ok(at >= 0, `row has no styled title: ${line}`);
+  return stripAnsi(line.slice(0, at)).length;
+}
+
+test("id column aligns single and double digit ids and stays fixed across selections", () => {
+  const board = [
+    task({ id: "T2", title: "Two", group: "Feature" }),
+    task({ id: "T13", title: "Thirteen", group: "Feature" }),
+  ];
+  const view = new TasksView(() => {});
+  view.tasks = board;
+  const lines = view.render(160);
+  const two = titleColumn(lines.find((line) => stripAnsi(line).includes("T2"))!);
+  const thirteen = titleColumn(lines.find((line) => stripAnsi(line).includes("T13"))!);
+  assert.equal(two, thirteen, "single and double digit titles start at different columns");
+
+  // The column must not shrink when the pointer moves onto the shorter id.
+  const columns = new Set<number>([two]);
+  for (let selected = 0; selected < board.length; selected += 1) {
+    const moving = new TasksView(() => {});
+    moving.tasks = board;
+    selectRow(moving, selected);
+    const selectedLine = moving.render(160).find((line) => line.startsWith("→"))!;
+    columns.add(titleColumn(selectedLine));
+  }
+  // A board left with only the shorter id must reserve the same column.
+  const alone = new TasksView(() => {});
+  alone.tasks = [task({ id: "T2", title: "Two" })];
+  columns.add(titleColumn(alone.render(160).find((line) => line.startsWith("→"))!));
+  assert.equal(columns.size, 1, `id column shifted: ${[...columns].join(", ")}`);
 });
 
 test("panel height is stable while the selection moves in both modes", () => {

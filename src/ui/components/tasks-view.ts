@@ -54,6 +54,10 @@ export class TasksView implements Component {
           : "No tasks yet.",
       );
     } else {
+      // One id column for the whole board, computed from the full task set so it
+      // does not shift as the scroll window or the selection changes. The floor
+      // keeps the common T1–T99 ids from collapsing to a narrower column.
+      const idWidth = Math.max(3, ...this.tasks.map((task) => safe(task.id).length));
       const start = Math.max(0, this.selected - 3);
       let lastGroup: string | undefined;
       sorted.slice(start, start + 7).forEach((task, i) => {
@@ -66,7 +70,7 @@ export class TasksView implements Component {
         // Build the row from a fixed prefix, a flexible title and a fixed status.
         // The status keeps its full width, so a narrow panel ellipsises the title
         // instead of clipping the state the row exists to show.
-        const prefix = `${start + i === this.selected ? "→" : " "} ${color ? t.fg(color, icon) : icon} ${safe(task.id)}  `;
+        const prefix = `${start + i === this.selected ? "→" : " "} ${color ? t.fg(color, icon) : icon} ${safe(task.id).padEnd(idWidth)}  `;
         const gap = "  ";
         const statusStyle = (text: string): string => t.fg("muted", text);
         const titleStyle = (text: string): string => t.fg("text", text);
