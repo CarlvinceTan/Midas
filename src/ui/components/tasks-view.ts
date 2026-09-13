@@ -15,6 +15,18 @@ const safe = (text: string): string => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " "
 /** Number of task rows in the scroll window; group headers are extra and reserved separately. */
 const windowRows = 7;
 
+/** Board control hooks the actions menu invokes for the selected task. */
+export interface TaskControls {
+  pause(id: string): void;
+  resume(id: string): void;
+  cancel(id: string): void;
+}
+
+interface MenuAction {
+  label: string;
+  run: () => void;
+}
+
 /** Read-only board browser: never changes the foreground session or directory. */
 export class TasksView implements Component {
   tasks: Task[] = [];
@@ -22,6 +34,7 @@ export class TasksView implements Component {
   private mode: "groups" | "worktrees" = "groups";
   private selected = 0;
   private details = false;
+  private menu?: { taskId: string; actions: MenuAction[]; index: number };
   /**
    * `multitask` selects the empty-state copy: multitask creates tasks from
    * submitted requests, so it must not point the user at a shell command.
@@ -29,14 +42,41 @@ export class TasksView implements Component {
   constructor(
     private onCancel: () => void,
     private multitask = false,
+    private controls: TaskControls = { pause: () => {}, resume: () => {}, cancel: () => {} },
   ) {}
   invalidate(): void {}
   handleInput(data: string): void {
+    if (this.menu) {
+      if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) { this.menu = undefined; return; }
+      if (matchesKey(data, "up")) { this.menu.index = Math.max(0, this.menu.index - 1); return; }
+      if (matchesKey(data, "down")) { this.menu.index = Math.min(this.menu.actions.length - 1, this.menu.index + 1); return; }
+      if (matchesKey(data, "enter")) {
+        const action = this.menu.actions[this.menu.index];
+        this.menu = undefined;
+        action?.run();
+        return;
+      }
+      return;
+    }
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) return this.onCancel();
     if (matchesKey(data, "tab")) { this.mode = this.mode === "groups" ? "worktrees" : "groups"; this.selected = 0; }
     if (matchesKey(data, "up")) this.selected = Math.max(0, this.selected - 1);
     if (matchesKey(data, "down")) this.selected = Math.min(this.tasks.length - 1, this.selected + 1);
-    if (matchesKey(data, "enter")) this.details = !this.details;
+    if (matchesKey(data, "enter")) this.openMenu();
+  }
+  /** Actions valid for the selected task; Enter invokes, Esc closes the menu. */
+  private openMenu(): void {
+    const group = (task: Task): string => this.mode === "groups" ? task.group || "Ungrouped" : task.attempts.at(-1)?.branch ?? "Not allocated";
+    const sorted = [...this.tasks].sort((a, b) => group(a).localeCompare(group(b)) || a.id.localeCompare(b.id, undefined, { numeric: true }));
+    const task = sorted[Math.max(0, Math.min(this.selected, sorted.length - 1))];
+    if (!task) return;
+    const actions: MenuAction[] = [];
+    if (task.status === "running" || task.status === "new") actions.push({ label: "Pause", run: () => this.controls.pause(task.id) });
+    if (task.status === "paused" || task.status === "blocked") actions.push({ label: "Resume", run: () => this.controls.resume(task.id) });
+    if (task.merge !== "merged" && task.status !== "completed" && task.status !== "cancelled") actions.push({ label: "Cancel", run: () => this.controls.cancel(task.id) });
+    actions.push({ label: "Show details", run: () => { this.details = !this.details; } });
+    actions.push({ label: "Close", run: () => {} });
+    this.menu = { taskId: task.id, actions, index: 0 };
   }
   render(width: number): string[] {
     const t = theme();
@@ -96,6 +136,13 @@ export class TasksView implements Component {
         }
       });
       if (sorted.length > windowRows) lines.push(t.fg("dim", `${this.selected + 1}/${sorted.length}`));
+    }
+    if (this.menu) {
+      lines.push(t.fg("accent", "Actions"));
+      for (const [index, action] of this.menu.actions.entries()) {
+        const cursor = index === this.menu.index ? "→" : " ";
+        lines.push(`${cursor} ${index === this.menu.index ? t.fg("accent", action.label) : action.label}`);
+      }
     }
     const selected = sorted[this.selected];
     const details: string[] = [];

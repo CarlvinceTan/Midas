@@ -214,12 +214,46 @@ test("details toggle keeps a stable height across selections", () => {
     const view = new TasksView(() => {});
     view.tasks = tasks;
     selectRow(view, selected);
-    view.handleInput("\r");
+    view.handleInput("\r"); // open the actions menu
+    view.handleInput("\x1b[B");
+    view.handleInput("\x1b[B"); // Pause -> Cancel -> Show details
+    view.handleInput("\r"); // invoke Show details
     const lines = view.render(160);
     assert.ok(lines.some((line) => line.includes("Worktree:")), `details missing for index ${selected}`);
     heights.add(lines.length);
   }
   assert.equal(heights.size, 1, `details height varied with selection: ${[...heights].join(", ")}`);
+});
+
+test("Enter opens an actions menu scoped to the task status", () => {
+  const view = new TasksView(() => {}, false, { pause: () => {}, resume: () => {}, cancel: () => {} });
+  view.tasks = [task({ id: "T1", status: "running" }), task({ id: "T2", status: "paused" })];
+  view.handleInput("\r");
+  let text = stripAnsi(view.render(160).join("\n"));
+  assert.match(text, /Actions/);
+  assert.match(text, /Pause/);
+  assert.match(text, /Cancel/);
+  assert.doesNotMatch(text, /Resume/);
+  view.handleInput("\x1b"); // close the menu
+  selectRow(view, 1);
+  view.handleInput("\r");
+  text = stripAnsi(view.render(160).join("\n"));
+  assert.match(text, /Resume/);
+  assert.doesNotMatch(text, /Pause/);
+});
+
+test("menu navigation stays in the menu and Esc closes only the menu", () => {
+  const paused: string[] = [];
+  const view = new TasksView(() => { throw new Error("overlay closed"); }, false, { pause: (id) => paused.push(id), resume: () => {}, cancel: () => {} });
+  view.tasks = [task({ id: "T1", status: "running" }), task({ id: "T2", status: "running" })];
+  view.handleInput("\r"); // menu on T1
+  view.handleInput("\x1b[B"); // Pause -> Cancel
+  view.handleInput("\x1b"); // Esc closes the menu, not the overlay
+  assert.doesNotMatch(stripAnsi(view.render(160).join("\n")), /Actions/);
+  assert.equal(paused.length, 0);
+  view.handleInput("\r"); // reopen
+  view.handleInput("\r"); // invoke the highlighted action (Pause)
+  assert.deepEqual(paused, ["T1"]);
 });
 
 test("empty and error renders keep a stable height for the same input", () => {

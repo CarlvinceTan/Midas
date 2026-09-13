@@ -3562,8 +3562,19 @@ export class MidasApp {
   }
 
   private openTasks(): void {
-    const view = new TasksView(() => this.closeOverlay(), this.activeAgent === ORCHESTRATOR_AGENT);
     let board: TaskBoard | undefined;
+    // Actions mutate the shared board; the overlay's 100ms poll picks up the new
+    // state, and failures surface as a flash instead of closing the panel.
+    const control = (run: (b: TaskBoard) => void): void => {
+      if (!board) return;
+      try { run(board); } catch (error) { this.flash(error instanceof Error ? error.message : String(error)); }
+      this.tui.requestRender();
+    };
+    const view = new TasksView(
+      () => this.closeOverlay(),
+      this.activeAgent === ORCHESTRATOR_AGENT,
+      { pause: (id) => control((b) => b.pause(id)), resume: (id) => control((b) => b.resume(id)), cancel: (id) => control((b) => b.cancel(id)) },
+    );
     try { board = new TaskBoard(this.options.cwd); }
     catch { view.error = "Tasks require an existing Git repository. No repository was created."; }
     const refresh = (): void => {
