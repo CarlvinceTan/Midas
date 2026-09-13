@@ -41,6 +41,10 @@ export class TasksView implements Component {
     const group = (task: Task): string => this.mode === "groups" ? task.group || "Ungrouped" : task.attempts.at(-1)?.branch ?? "Not allocated";
     const sorted = [...this.tasks].sort((a, b) => group(a).localeCompare(group(b)) || a.id.localeCompare(b.id, undefined, { numeric: true }));
     this.selected = Math.max(0, Math.min(this.selected, sorted.length - 1));
+    // A scroll window can gain or lose group headers and rows near either end,
+    // so reserve the worst case up front and pad the bottom. This keeps the
+    // overlay frame a fixed height while the pointer moves (see `maxListHeight`).
+    const listHeight = this.error || !sorted.length ? 1 : this.maxListHeight(sorted, group);
     const lines: string[] = [];
     if (this.error) lines.push(t.fg("error", safe(this.error)));
     else if (!sorted.length) {
@@ -49,28 +53,56 @@ export class TasksView implements Component {
           ? "No tasks yet. Tasks are created automatically as requests are sent."
           : "No tasks yet.",
       );
+    } else {
+      const start = Math.max(0, this.selected - 3);
+      let lastGroup: string | undefined;
+      sorted.slice(start, start + 7).forEach((task, i) => {
+        const label = group(task);
+        if (label !== lastGroup) { lines.push(t.fg("accent", safe(label))); lastGroup = label; }
+        const waiting = (task.dependencies ?? []).filter((id) => this.tasks.find((v) => v.id === id)?.merge !== "merged");
+        const status = task.merge === "merged" ? `⤵ merged → ${task.target}` : task.merge === "failed" ? "! merge failed" : task.merge === "integrating" ? "integrating…" : task.status === "completed" ? "not merged" : task.status === "blocked" ? "blocked" : waiting.length ? `waiting on ${waiting.join(", ")}` : task.status === "new" ? "ready" : task.attempts.at(-1)?.branch ?? "provisioning";
+        const icon = taskIcon(task, Math.floor(Date.now() / 100));
+        const color = taskIconColor(task);
+        lines.push(`${start + i === this.selected ? "→" : " "} ${color ? t.fg(color, icon) : icon} ${safe(task.id)}  ${safe(task.title)}  ${t.fg("muted", safe(status))}`);
+      });
+      if (sorted.length > 7) lines.push(t.fg("dim", `${this.selected + 1}/${sorted.length}`));
     }
-    const start = Math.max(0, this.selected - 3);
-    let lastGroup: string | undefined;
-    sorted.slice(start, start + 7).forEach((task, i) => {
-      const label = group(task);
-      if (label !== lastGroup) { lines.push(t.fg("accent", safe(label))); lastGroup = label; }
-      const waiting = (task.dependencies ?? []).filter((id) => this.tasks.find((v) => v.id === id)?.merge !== "merged");
-      const status = task.merge === "merged" ? `⤵ merged → ${task.target}` : task.merge === "failed" ? "! merge failed" : task.merge === "integrating" ? "integrating…" : task.status === "completed" ? "not merged" : task.status === "blocked" ? "blocked" : waiting.length ? `waiting on ${waiting.join(", ")}` : task.status === "new" ? "ready" : task.attempts.at(-1)?.branch ?? "provisioning";
-      const icon = taskIcon(task, Math.floor(Date.now() / 100));
-      const color = taskIconColor(task);
-      lines.push(`${start + i === this.selected ? "→" : " "} ${color ? t.fg(color, icon) : icon} ${safe(task.id)}  ${safe(task.title)}  ${t.fg("muted", safe(status))}`);
-    });
-    if (sorted.length > 7) lines.push(t.fg("dim", `${this.selected + 1}/${sorted.length}`));
     const selected = sorted[this.selected];
+    const details: string[] = [];
     if (selected && this.details) {
       const attempt = selected.attempts.at(-1);
-      lines.push("", safe(selected.instructions), safe(selected.detail ?? ""),
+      details.push("", safe(selected.instructions), safe(selected.detail ?? ""),
         `Worktree: ${safe(attempt?.worktree ?? "not allocated")}${attempt?.cleaned ? " (removed)" : ""}`,
         `Session: ${safe(attempt?.session ?? "none")} · attempts: ${selected.attempts.length}`,
         `Checks: ${safe(selected.checks.join("; "))}`,
         `Result: ${attempt?.result ?? "none"} · merge: ${selected.mergedCommit ?? "none"}`);
     }
+    lines.push(...details);
+    // The details block has a constant line count for a given set, so padding the
+    // whole output to `listHeight + details` is stable for every selection.
+    while (lines.length < listHeight + details.length) lines.push("");
     return lines.map((line) => truncateToWidth(line, Math.max(1, width), "…"));
+  }
+
+  /**
+   * Worst-case number of list lines across every possible scroll position for the
+   * current task set/mode. The board is small, so scanning each position is cheap
+   * and avoids hand-deriving how many group headers a window can contain.
+   */
+  private maxListHeight(sorted: Task[], group: (task: Task) => string): number {
+    let max = 1;
+    for (let selected = 0; selected < sorted.length; selected += 1) {
+      const start = Math.max(0, selected - 3);
+      let count = 0;
+      let lastGroup: string | undefined;
+      for (const task of sorted.slice(start, start + 7)) {
+        const label = group(task);
+        if (label !== lastGroup) { count += 1; lastGroup = label; }
+        count += 1;
+      }
+      if (sorted.length > 7) count += 1;
+      max = Math.max(max, count);
+    }
+    return max;
   }
 }
