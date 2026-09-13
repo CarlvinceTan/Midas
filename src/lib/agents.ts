@@ -27,6 +27,9 @@ export const ORCHESTRATOR_AGENT = "orchestrator";
 /** Internal board worker; users never select this agent directly. */
 export const BOARD_WORKER_AGENT = "task";
 
+/** Internal conflict resolver invoked only by the merge pipeline. */
+export const MERGE_AGENT = "merge";
+
 /** User-facing entry points, listed at the top of the startup header. */
 const ENTRY_AGENTS = new Set([DEFAULT_INTERACTIVE_AGENT, ORCHESTRATOR_AGENT]);
 

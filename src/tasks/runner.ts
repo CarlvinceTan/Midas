@@ -4,7 +4,7 @@ import type { Session } from "@opencode-ai/sdk";
 import { TaskBoard, gitAsync, type Task, type Attempt } from "./board.ts";
 import { startServer } from "../opencode/server.ts";
 import { midasConfigFile } from "../config/pi.ts";
-import { BOARD_WORKER_AGENT } from "../lib/agents.ts";
+import { BOARD_WORKER_AGENT, MERGE_AGENT } from "../lib/agents.ts";
 
 /**
  * Where a worker run's output (check commands, the agent's final text) is sent.
@@ -175,7 +175,47 @@ async function assertHead(attempt: Attempt): Promise<void> {
   }
 }
 
-export async function mergeTask(board: TaskBoard, id: string, output: OutputSink = discardOutput): Promise<void> {
+/** Resolves an in-progress merge conflict in `cwd` before the pipeline commits. */
+export type ConflictResolver = (task: Task, cwd: string, output: OutputSink) => Promise<void>;
+
+/**
+ * Default resolver: run the `merge` subagent in the conflicted checkout. It only
+ * resolves and stages files; this pipeline verifies and commits, so a failed or
+ * partial resolution still aborts safely.
+ */
+const mergeAgentResolve: ConflictResolver = async (task, cwd, output) => {
+  const server = await startServer({ cwd, configFile: midasConfigFile(cwd) });
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(new Error("Merge agent exceeded 20 minutes")), 20 * 60_000);
+  let session: Session | undefined;
+  try {
+    session = await server.client.session.create({ query: { directory: cwd }, body: { title: `Merge ${task.id}` } }) as unknown as Session;
+    if (!session?.id) throw new Error("Backend did not create a merge session");
+    const conflicts = await gitAsync(cwd, "diff", "--name-only", "--diff-filter=U");
+    const result = await server.client.session.prompt({
+      path: { id: session.id }, query: { directory: cwd }, signal: abort.signal,
+      body: {
+        agent: MERGE_AGENT,
+        parts: [{ type: "text", text: `An automated merge for task ${task.id} ("${task.title}") hit conflicts in this worktree. Conflicted files:\n${conflicts}\n\nResolve every conflict and stage each resolved file. Do not commit.` }],
+      },
+    }) as unknown as { info?: { error?: unknown }; parts?: Array<{ type: string; text?: string }> };
+    if (result.info?.error) throw new Error(`Merge agent failed: ${JSON.stringify(result.info.error)}`);
+    output((result.parts ?? []).filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") + "\n");
+    if (await gitAsync(cwd, "diff", "--name-only", "--diff-filter=U")) throw new Error("Merge agent left unresolved conflicts");
+  } finally {
+    clearTimeout(timeout);
+    abort.abort();
+    if (session) await server.client.session.abort({ path: { id: session.id }, query: { directory: cwd }, signal: AbortSignal.timeout(5000) }).catch(() => {});
+    if (server.proc.exitCode === null && server.proc.signalCode === null) {
+      const exited = once(server.proc, "exit");
+      server.close();
+      const kill = setTimeout(() => server.proc.kill("SIGKILL"), 5000);
+      try { await exited; } finally { clearTimeout(kill); }
+    }
+  }
+};
+
+export async function mergeTask(board: TaskBoard, id: string, output: OutputSink = discardOutput, resolveConflict: ConflictResolver = mergeAgentResolve): Promise<void> {
   board.get(id);
   const releaseTask = board.lock(`task-${id}`);
   let integrating = false;
@@ -195,12 +235,28 @@ export async function mergeTask(board: TaskBoard, id: string, output: OutputSink
       const base = await gitAsync(board.cwd, "rev-parse", "HEAD");
       board.update(id, (t) => { t.merge = "integrating"; t.detail = `Merging into ${task.target}`; });
       integrating = true;
-      // Conflicts are never resolved automatically; abort and surface them.
+      // A clean merge commits itself; a conflict is handed to the merge agent,
+      // then verified and finalized here (never trusted blindly).
       try {
         await gitAsync(board.cwd, "merge", "--no-edit", "--no-ff", mergedCommit);
       } catch (error) {
-        await gitAsync(board.cwd, "merge", "--abort").catch(() => undefined);
-        throw new Error(`Merge conflict into ${task.target}: ${error instanceof Error ? error.message : String(error)}`);
+        const conflicted = (await gitAsync(board.cwd, "diff", "--name-only", "--diff-filter=U")).trim();
+        if (!conflicted) {
+          await gitAsync(board.cwd, "merge", "--abort").catch(() => undefined);
+          throw new Error(`Merge failed into ${task.target}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        try {
+          await resolveConflict(task, board.cwd, output);
+          await gitAsync(board.cwd, "add", "--all");
+          if (await gitAsync(board.cwd, "diff", "--name-only", "--diff-filter=U")) throw new Error("unresolved conflicts remain");
+          // `git diff --check` rejects leftover `<<<<<<<` / `>>>>>>>` markers.
+          try { await gitAsync(board.cwd, "diff", "--cached", "--check"); }
+          catch { throw new Error("merge left conflict markers"); }
+          await gitAsync(board.cwd, "commit", "--no-edit");
+        } catch (resolveError) {
+          await gitAsync(board.cwd, "merge", "--abort").catch(() => undefined);
+          throw new Error(`Merge conflict unresolved: ${resolveError instanceof Error ? resolveError.message : String(resolveError)}`);
+        }
       }
       try {
         await checks(task, board.cwd, output);

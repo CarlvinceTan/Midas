@@ -141,11 +141,23 @@ test("merge conflict preserves result and never advances target", async (t) => {
   for (const task of [a, b]) await runTask(board, task.id, async (_, attempt) => writeFileSync(join(attempt.worktree, "base.txt"), task.id));
   await mergeTask(board, a.id);
   const before = git(cwd, "rev-parse", "HEAD");
-  await assert.rejects(mergeTask(board, b.id));
+  // No resolver -> the conflict is aborted and the task left for inspection.
+  await assert.rejects(mergeTask(board, b.id, undefined, async () => { throw new Error("no merge agent"); }));
   assert.equal(board.get(b.id).status, "completed");
   assert.equal(board.get(b.id).merge, "failed");
   assert.equal(git(cwd, "rev-parse", "HEAD"), before);
   await assert.rejects(cleanupTask(board, b.id), /Only merged/);
+});
+
+test("merge conflict is resolved by the merge agent and committed", async (t) => {
+  const { cwd, board } = fixture(t);
+  const a = board.add({ ...contract, checks: ["test -f base.txt"] });
+  const b = board.add({ ...contract, checks: ["test -f base.txt"] });
+  for (const task of [a, b]) await runTask(board, task.id, async (_, attempt) => writeFileSync(join(attempt.worktree, "base.txt"), task.id));
+  await mergeTask(board, a.id);
+  await mergeTask(board, b.id, undefined, async (_task, dir) => { writeFileSync(join(dir, "base.txt"), "resolved\n"); });
+  assert.equal(board.get(b.id).merge, "merged");
+  assert.equal(readFileSync(join(cwd, "base.txt"), "utf8"), "resolved\n");
 });
 
 test("merge defers when the target branch is not checked out; merged cleanup force-removes", async (t) => {
