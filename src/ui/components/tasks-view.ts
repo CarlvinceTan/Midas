@@ -12,6 +12,8 @@ export function taskIconColor(task: Task): ThemeColor | undefined {
   return task.status === "running" ? "accent" : task.status === "completed" ? "success" : task.status === "blocked" ? "error" : undefined;
 }
 const safe = (text: string): string => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+/** Number of task rows in the scroll window; group headers are extra and reserved separately. */
+const windowRows = 7;
 
 /** Read-only board browser: never changes the foreground session or directory. */
 export class TasksView implements Component {
@@ -58,9 +60,9 @@ export class TasksView implements Component {
       // does not shift as the scroll window or the selection changes. The floor
       // keeps the common T1–T99 ids from collapsing to a narrower column.
       const idWidth = Math.max(3, ...this.tasks.map((task) => safe(task.id).length));
-      const start = Math.max(0, this.selected - 3);
+      const start = this.scrollStart(sorted.length, this.selected);
       let lastGroup: string | undefined;
-      sorted.slice(start, start + 7).forEach((task, i) => {
+      sorted.slice(start, start + windowRows).forEach((task, i) => {
         const label = group(task);
         if (label !== lastGroup) { lines.push(t.fg("accent", safe(label))); lastGroup = label; }
         const waiting = (task.dependencies ?? []).filter((id) => this.tasks.find((v) => v.id === id)?.merge !== "merged");
@@ -93,7 +95,7 @@ export class TasksView implements Component {
           lines.push(prefix + gap + clippedStatus);
         }
       });
-      if (sorted.length > 7) lines.push(t.fg("dim", `${this.selected + 1}/${sorted.length}`));
+      if (sorted.length > windowRows) lines.push(t.fg("dim", `${this.selected + 1}/${sorted.length}`));
     }
     const selected = sorted[this.selected];
     const details: string[] = [];
@@ -113,22 +115,33 @@ export class TasksView implements Component {
   }
 
   /**
+   * First task index of the scroll window. Centred on the selection, then
+   * clamped so the window never runs past the last task: near the bottom the
+   * selection lands on the last content row while the earlier rows scroll up.
+   */
+  private scrollStart(total: number, selected: number): number {
+    const maxStart = Math.max(0, total - windowRows);
+    return Math.min(Math.max(0, selected - 3), maxStart);
+  }
+
+  /**
    * Worst-case number of list lines across every possible scroll position for the
-   * current task set/mode. The board is small, so scanning each position is cheap
-   * and avoids hand-deriving how many group headers a window can contain.
+   * current task set/mode. It scans the same clamped windows `render` produces so
+   * the reserved height accounts for the group headers each window can gain or
+   * lose; the board is small, so scanning every position is cheap.
    */
   private maxListHeight(sorted: Task[], group: (task: Task) => string): number {
     let max = 1;
     for (let selected = 0; selected < sorted.length; selected += 1) {
-      const start = Math.max(0, selected - 3);
+      const start = this.scrollStart(sorted.length, selected);
       let count = 0;
       let lastGroup: string | undefined;
-      for (const task of sorted.slice(start, start + 7)) {
+      for (const task of sorted.slice(start, start + windowRows)) {
         const label = group(task);
         if (label !== lastGroup) { count += 1; lastGroup = label; }
         count += 1;
       }
-      if (sorted.length > 7) count += 1;
+      if (sorted.length > windowRows) count += 1;
       max = Math.max(max, count);
     }
     return max;

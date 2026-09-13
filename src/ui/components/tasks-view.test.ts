@@ -52,6 +52,27 @@ function selectRow(view: TasksView, index: number): void {
   for (let i = 0; i < index; i += 1) view.handleInput("\x1b[B");
 }
 
+interface ContentRow {
+  arrow: boolean;
+  id: string;
+}
+
+/** Content rows (task rows, not group headers or the counter) in render order. */
+function contentRows(lines: string[]): ContentRow[] {
+  return lines.map(stripAnsi).flatMap((line) => {
+    const match = /^([→ ]) \S (T\d+)\b/.exec(line);
+    return match ? [{ arrow: match[1] === "→", id: match[2]! }] : [];
+  });
+}
+
+/** Render `tasks` with the pointer moved to `selected`. */
+function renderSelected(tasks: Task[], selected: number): string[] {
+  const view = new TasksView(() => {});
+  view.tasks = tasks;
+  selectRow(view, selected);
+  return view.render(160);
+}
+
 test("taskIcon keeps raw glyphs and colored status reflects task state", () => {
   assert.equal(taskIcon(task(), 0), "○");
   assert.equal(taskIcon(task({ status: "completed" }), 0), "✓");
@@ -215,4 +236,89 @@ test("empty and error renders keep a stable height for the same input", () => {
     heights.add(view.render(160).length);
   }
   assert.equal(heights.size, 1, `error height varied with selection: ${[...heights].join(", ")}`);
+});
+
+test("selection stays on the bottom row while the window scrolls up", () => {
+  const tasks = multiGroupTasks();
+
+  // The first task is on the first content row, with the window starting at the top.
+  const first = contentRows(renderSelected(tasks, 0));
+  assert.ok(first[0]?.arrow, `first content row is not selected: ${JSON.stringify(first)}`);
+  assert.equal(first[0]?.id, "T1", `first content row is not the first task: ${JSON.stringify(first)}`);
+
+  // The last task lands on the last content row with a full window above it and
+  // no content row below the arrow.
+  const last = contentRows(renderSelected(tasks, tasks.length - 1));
+  const lastRow = last.at(-1);
+  assert.ok(lastRow?.arrow, `arrow is not on the last content row: ${JSON.stringify(last)}`);
+  assert.equal(lastRow?.id, "T8", `last content row is not the last task: ${JSON.stringify(last)}`);
+  assert.equal(last.length, 7, `window was not full at the end: ${last.length}`);
+  assert.equal(last.filter((row) => row.arrow).length, 1, `arrow appeared more than once: ${JSON.stringify(last)}`);
+
+  // Crossing the scroll threshold drops the top task and pulls in the next one,
+  // so the content shifts up rather than leaving a gap below the arrow.
+  const before = contentRows(renderSelected(tasks, 6)).map((row) => row.id);
+  const after = contentRows(renderSelected(tasks, 7)).map((row) => row.id);
+  assert.equal(after.length, 7, `window under-filled while scrolling: ${after.join(", ")}`);
+  assert.equal(after[0], before[1], `rows did not scroll up: ${before.join(", ")} -> ${after.join(", ")}`);
+});
+
+test("bottom pinning keeps T12's fixed panel height", () => {
+  const tasks = multiGroupTasks();
+  const heights = [0, Math.floor(tasks.length / 2), tasks.length - 1].map((selected) => renderSelected(tasks, selected).length);
+  assert.equal(new Set(heights).size, 1, `height varied with selection: ${heights.join(", ")}`);
+});
+
+test("many group headers in a window still fit the fixed height", () => {
+  // One group per task maximises the headers a window can span, so this is the
+  // worst case for the reserved height.
+  const tasks = Array.from({ length: 9 }, (_, i) => task({ id: `T${i + 1}`, title: `Task ${i + 1}`, group: `Group ${i + 1}` }));
+  const heights = new Set<number>();
+  for (let selected = 0; selected < tasks.length; selected += 1) {
+    const lines = renderSelected(tasks, selected);
+    heights.add(lines.length);
+    const rows = contentRows(lines);
+    assert.equal(rows.length, Math.min(7, tasks.length), `window under-filled at ${selected}: ${rows.map((row) => row.id).join(", ")}`);
+    assert.equal(rows.filter((row) => row.arrow).length, 1, `arrow missing at ${selected}`);
+  }
+  assert.equal(heights.size, 1, `height varied with selection: ${[...heights].join(", ")}`);
+});
+
+test("group headers at the clamped tail are reserved in the fixed height", () => {
+  // A large leading group followed by many singleton groups: the final window
+  // spans more headers than any pre-clamp window, so the reserved height must be
+  // derived from the same clamped windows the renderer produces.
+  const tasks = [
+    ...Array.from({ length: 3 }, (_, i) => task({ id: `T${i + 1}`, title: `Alpha ${i + 1}`, group: "Alpha" })),
+    task({ id: "T4", title: "Beta", group: "Beta" }),
+    task({ id: "T5", title: "Gamma", group: "Gamma" }),
+    task({ id: "T6", title: "Delta", group: "Delta" }),
+    task({ id: "T7", title: "Epsilon", group: "Epsilon" }),
+    task({ id: "T8", title: "Zeta", group: "Zeta" }),
+  ];
+  const first = renderSelected(tasks, 0);
+  const last = renderSelected(tasks, tasks.length - 1);
+  assert.equal(first.length, last.length, `tail window overflowed the fixed height: ${first.length} vs ${last.length}`);
+  const rows = contentRows(last);
+  assert.equal(rows.length, 7, `tail window not full: ${rows.map((row) => row.id).join(", ")}`);
+  assert.ok(rows.at(-1)?.arrow && rows.at(-1)?.id === "T8", `arrow is not on the last content row: ${JSON.stringify(rows)}`);
+});
+
+test("a small board renders at its own stable height with no empty window rows", () => {
+  const small = [
+    task({ id: "T1", title: "One", group: "Alpha" }),
+    task({ id: "T2", title: "Two", group: "Beta" }),
+    task({ id: "T3", title: "Three", group: "Beta" }),
+  ];
+  const heights = new Set<number>();
+  for (let selected = 0; selected < small.length; selected += 1) {
+    const lines = renderSelected(small, selected);
+    heights.add(lines.length);
+    // Every task is shown and the board is not padded out to a full window.
+    assert.equal(contentRows(lines).length, small.length, `small board dropped a task at ${selected}`);
+    assert.equal(lines.filter((line) => line === "").length, 0, `small board gained padding at ${selected}`);
+  }
+  // Two group headers (Alpha, Beta) plus three task rows.
+  assert.equal(heights.size, 1, `small board height varied: ${[...heights].join(", ")}`);
+  assert.equal([...heights][0], 5, `small board height is wrong: ${[...heights].join(", ")}`);
 });
