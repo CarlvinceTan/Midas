@@ -137,6 +137,38 @@ test("merged rows keep the muted full status", () => {
   assert.ok(!line.includes(theme().fg("error", "!")), `merged row gained a red bang: ${line}`);
 });
 
+test("completed tasks with a blocked merge show a warning pending status with the reason", () => {
+  const branch = renderRow({ status: "completed", merge: "not-merged", mergeBlocked: "target main is not checked out" });
+  const branchText = stripAnsi(branch);
+  assert.ok(branchText.includes("merge pending"), `missing pending status: ${branch}`);
+  assert.ok(branchText.includes("target main not checked out"), `missing short reason: ${branch}`);
+  assert.ok(
+    branch.includes(theme().fg("warning", "merge pending — target main not checked out")),
+    `pending status is not warning-coloured: ${branch}`,
+  );
+
+  const overlap = renderRow({ status: "completed", merge: "not-merged", mergeBlocked: "local changes would be overwritten: base.txt" });
+  assert.ok(stripAnsi(overlap).includes("merge pending — local changes overlap"), `overlap reason not shortened: ${overlap}`);
+  assert.equal(activeColor(overlap, overlap.indexOf("merge pending")), theme().getFgAnsi("warning"), `overlap status is not warning-coloured: ${overlap}`);
+});
+
+test("a completed unmerged task without a blocked reason keeps the neutral not-merged status", () => {
+  const line = renderRow({ status: "completed", merge: "not-merged" });
+  const text = stripAnsi(line);
+  assert.ok(text.includes("not merged"), `not-merged status changed: ${line}`);
+  assert.ok(!text.includes("merge pending"), `unblocked task gained a pending status: ${line}`);
+  assert.ok(line.includes(theme().fg("muted", "not merged")), `not-merged status is not muted: ${line}`);
+  assert.ok(!line.includes(theme().getFgAnsi("warning")), `unblocked task gained a warning status: ${line}`);
+});
+
+test("a merged task renders no pending status even with a stale reason", () => {
+  const line = renderRow({ status: "completed", merge: "merged", target: "main", mergeBlocked: "target main is not checked out" });
+  const text = stripAnsi(line);
+  assert.ok(text.includes("⤵ merged → main"), `merged status changed: ${line}`);
+  assert.ok(!text.includes("merge pending"), `merged task showed a pending status: ${line}`);
+  assert.ok(line.includes(theme().fg("muted", "⤵ merged → main")), `merged status is not muted: ${line}`);
+});
+
 test("merge-failed bang stays red when the status is truncated", () => {
   const view = new TasksView(() => {});
   view.tasks = [task({ merge: "failed" })];
