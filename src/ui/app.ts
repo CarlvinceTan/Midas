@@ -638,7 +638,7 @@ export class MidasApp {
   /** Client-side `!` shell history for the active session, persisted on exit. */
   private sessionBash: StoredBash[] = [];
   /** Steered prompts awaiting their transcript user message, to fold into the run. */
-  private pendingSteers: Array<{ text: string; at: number }> = [];
+  private pendingSteers: Array<{ text: string; at: number; localId?: string }> = [];
   private shellCwd: string;
   private shellProcess: ReturnType<typeof spawn> | undefined;
   private title = "";
@@ -2239,8 +2239,9 @@ export class MidasApp {
     }
     const text = steering.map((item) => item.text).join("\n\n");
     const attachments = steering.flatMap((item) => item.attachments);
-    this.pendingSteers.push({ text, at: Date.now() });
-    // The steered message appears in the transcript; no toast for it.
+    // Show the steer immediately; the v2 queue does not always echo it back.
+    const localId = this.options.controller.transcript.addLocalUserMessage(text);
+    this.pendingSteers.push({ text, at: Date.now(), localId });
     void this.sendPrompt(text, attachments);
   }
 
@@ -2281,8 +2282,9 @@ export class MidasApp {
    * live run once their transcript messages land.
    */
   private steerPrompt(prompt: QueuedPrompt): void {
-    this.pendingSteers.push({ text: prompt.text, at: Date.now() });
-    // The steered message appears in the transcript; no toast for it.
+    // Show the steer immediately; the v2 queue does not always echo it back.
+    const localId = this.options.controller.transcript.addLocalUserMessage(prompt.text);
+    this.pendingSteers.push({ text: prompt.text, at: Date.now(), localId });
     void this.sendPrompt(prompt.text, prompt.attachments);
   }
 
@@ -2309,6 +2311,8 @@ export class MidasApp {
         const needle = steer.text.trim();
         if (needle && (text === needle || text.includes(needle))) {
           message.steer = true;
+          // The server's own message replaces our local placeholder.
+          if (steer.localId) this.options.controller.transcript.removeMessage(steer.localId);
           this.pendingSteers.splice(index, 1);
           break;
         }

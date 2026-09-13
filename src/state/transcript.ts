@@ -320,6 +320,30 @@ export class Transcript {
     this.pushLocal("record", message);
   }
 
+  /**
+   * Show a user message locally when the server won't echo it promptly — a steer
+   * admitted through opencode's v2 input queue. Marked `steer` so it folds into
+   * the live run; `tagSteers` removes it once the server's own message lands.
+   */
+  addLocalUserMessage(text: string, steer = true): string {
+    const id = `local_user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const part: TextView = { kind: "text", id: `${id}_p`, text };
+    const view: MessageView = {
+      id,
+      role: "user",
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+      created: Date.now(),
+      parts: [part],
+      ...(steer ? { steer: true } : {}),
+    };
+    this.messageIndex.set(view.id, view);
+    this.messages.push(view);
+    this.touch(view);
+    this.emit();
+    return id;
+  }
+
   /** Start a `!` shell execution; returns its part id. */
   addBash(command: string, exclude: boolean, at = Date.now()): string {
     const id = `bash_${at}_${Math.random().toString(36).slice(2, 8)}`;

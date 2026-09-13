@@ -22,6 +22,18 @@ const msg = (id: string, created: number): MessageView => ({
   parts: [],
 });
 
+test("addLocalUserMessage shows a steer immediately and can be removed", () => {
+  const transcript = new Transcript();
+  const id = transcript.addLocalUserMessage("steer me");
+  const message = transcript.messages.at(-1)!;
+  assert.equal(message.id, id);
+  assert.equal(message.role, "user");
+  assert.equal(message.steer, true);
+  assert.equal(message.parts[0]!.kind === "text" ? message.parts[0]!.text : "", "steer me");
+  transcript.removeMessage(id);
+  assert.equal(transcript.messages.some((m) => m.id === id), false);
+});
+
 test("addBash records the supplied timestamp and a running part", () => {
   const transcript = new Transcript();
   transcript.addBash("ls -la", false, 42);
