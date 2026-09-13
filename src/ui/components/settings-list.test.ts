@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SettingsList, type SettingsListTheme } from "@earendil-works/pi-tui";
+import { agentSettingsRows } from "../../lib/agents.ts";
+import { stripAnsi } from "../../lib/ansi.ts";
 
 const listTheme: SettingsListTheme = {
   label: (text) => text,
@@ -40,4 +42,35 @@ test("settings lists visually separate groups without adding selectable rows", (
   list.handleMouse?.({ type: "press", button: "left", x: 0, y: 3 } as never);
   list.handleMouse?.({ type: "click", button: "left", x: 0, y: 3 } as never);
   assert.deepEqual(changes, ["advisor"]);
+});
+
+test("agents overlay renders internals as ordinary rows with no separator or dim label", () => {
+  const rows = agentSettingsRows([
+    { name: "main", mode: "primary" },
+    { name: "advisor", mode: "subagent" },
+    { name: "task", mode: "primary" },
+    { name: "compaction", mode: "primary" },
+    { name: "summary", mode: "primary" },
+    { name: "title", mode: "primary" },
+  ]);
+  const list = new SettingsList(
+    rows.map((row) => ({ id: `agent:${row.name}`, label: row.label, currentValue: "default", group: row.group })),
+    14,
+    listTheme,
+    () => {},
+    () => {},
+  );
+  const itemLines = list.render(60).slice(0, rows.length);
+  // The rows are contiguous: no blank separator isolates compaction/summary/title.
+  assert.ok(
+    itemLines.every((line) => line !== ""),
+    `agent rows must be one section, got:\n${JSON.stringify(itemLines)}`,
+  );
+  for (const name of ["Compaction", "Summary", "Title"]) {
+    // Each internal is present among the agents, in the same run of rows.
+    const line = itemLines.find((candidate) => stripAnsi(candidate).includes(name));
+    assert.ok(line, `${name} is rendered as a /agents row`);
+    // Ordinary label styling: no muted/dim ANSI wrapper on internal labels.
+    assert.ok(!line!.includes("[2m"), `${name} label is not dimmed`);
+  }
 });
