@@ -74,6 +74,13 @@ function renderSelected(tasks: Task[], selected: number): string[] {
   return view.render(160);
 }
 
+/** Blank rows at the bottom of a render, which the panel must never add. */
+function trailingBlanks(lines: string[]): number {
+  let count = 0;
+  for (let i = lines.length - 1; i >= 0 && stripAnsi(lines[i]!).trim() === ""; i -= 1) count += 1;
+  return count;
+}
+
 test("taskIcon keeps raw glyphs and colored status reflects task state", () => {
   assert.equal(taskIcon(task(), 0), "○");
   assert.equal(taskIcon(task({ status: "completed" }), 0), "✓");
@@ -195,28 +202,25 @@ test("id column aligns single and double digit ids and stays fixed across select
   assert.equal(columns.size, 1, `id column shifted: ${[...columns].join(", ")}`);
 });
 
-test("panel height is stable while the selection moves in both modes", () => {
+test("panel fits its content with no blank rows while the selection moves in both modes", () => {
   const tasks = multiGroupTasks();
   for (const mode of ["groups", "worktrees"] as const) {
-    const heights = new Set<number>();
     for (const selected of [0, Math.floor(tasks.length / 2), tasks.length - 1]) {
       const view = new TasksView(() => {});
       view.tasks = tasks;
       if (mode === "worktrees") view.handleInput("\t");
       selectRow(view, selected);
       const lines = view.render(160);
-      heights.add(lines.length);
       const marker = lines.find((line) => line.startsWith("→"));
       assert.ok(marker, `${mode}: no selected row for index ${selected}`);
       assert.ok(tasks.some((t) => marker!.includes(t.id)), `${mode}: selected row lost its task id: ${marker}`);
+      assert.equal(trailingBlanks(lines), 0, `${mode}: blank rows below the list at ${selected}`);
     }
-    assert.equal(heights.size, 1, `${mode}: height varied with selection: ${[...heights].join(", ")}`);
   }
 });
 
-test("details toggle keeps a stable height across selections", () => {
+test("details toggle renders without trailing blank rows", () => {
   const tasks = multiGroupTasks();
-  const heights = new Set<number>();
   for (const selected of [0, Math.floor(tasks.length / 2), tasks.length - 1]) {
     const view = new TasksView(() => {});
     view.tasks = tasks;
@@ -225,9 +229,8 @@ test("details toggle keeps a stable height across selections", () => {
     view.handleInput("\r"); // invoke the first action (Show details)
     const lines = view.render(160);
     assert.ok(lines.some((line) => line.includes("Worktree:")), `details missing for index ${selected}`);
-    heights.add(lines.length);
+    assert.equal(trailingBlanks(lines), 0, `details added blank rows at ${selected}`);
   }
-  assert.equal(heights.size, 1, `details height varied with selection: ${[...heights].join(", ")}`);
 });
 
 test("Enter opens an actions menu scoped to the task status", () => {
@@ -320,31 +323,27 @@ test("selection stays on the bottom row while the window scrolls up", () => {
   assert.equal(after[0], before[1], `rows did not scroll up: ${before.join(", ")} -> ${after.join(", ")}`);
 });
 
-test("bottom pinning keeps T12's fixed panel height", () => {
+test("the list never pads blank rows at the bottom", () => {
   const tasks = multiGroupTasks();
-  const heights = [0, Math.floor(tasks.length / 2), tasks.length - 1].map((selected) => renderSelected(tasks, selected).length);
-  assert.equal(new Set(heights).size, 1, `height varied with selection: ${heights.join(", ")}`);
+  for (const selected of [0, Math.floor(tasks.length / 2), tasks.length - 1]) {
+    assert.equal(trailingBlanks(renderSelected(tasks, selected)), 0, `blank rows at ${selected}`);
+  }
 });
 
-test("many group headers in a window still fit the fixed height", () => {
-  // One group per task maximises the headers a window can span, so this is the
-  // worst case for the reserved height.
+test("a window spanning many group headers still shows a full window", () => {
+  // One group per task maximises the headers a window can span.
   const tasks = Array.from({ length: 9 }, (_, i) => task({ id: `T${i + 1}`, title: `Task ${i + 1}`, group: `Group ${i + 1}` }));
-  const heights = new Set<number>();
   for (let selected = 0; selected < tasks.length; selected += 1) {
     const lines = renderSelected(tasks, selected);
-    heights.add(lines.length);
     const rows = contentRows(lines);
     assert.equal(rows.length, Math.min(7, tasks.length), `window under-filled at ${selected}: ${rows.map((row) => row.id).join(", ")}`);
     assert.equal(rows.filter((row) => row.arrow).length, 1, `arrow missing at ${selected}`);
+    assert.equal(trailingBlanks(lines), 0, `blank rows at ${selected}`);
   }
-  assert.equal(heights.size, 1, `height varied with selection: ${[...heights].join(", ")}`);
 });
 
-test("group headers at the clamped tail are reserved in the fixed height", () => {
-  // A large leading group followed by many singleton groups: the final window
-  // spans more headers than any pre-clamp window, so the reserved height must be
-  // derived from the same clamped windows the renderer produces.
+test("the clamped tail window is full and unpadded", () => {
+  // A large leading group followed by many singleton groups.
   const tasks = [
     ...Array.from({ length: 3 }, (_, i) => task({ id: `T${i + 1}`, title: `Alpha ${i + 1}`, group: "Alpha" })),
     task({ id: "T4", title: "Beta", group: "Beta" }),
@@ -353,12 +352,11 @@ test("group headers at the clamped tail are reserved in the fixed height", () =>
     task({ id: "T7", title: "Epsilon", group: "Epsilon" }),
     task({ id: "T8", title: "Zeta", group: "Zeta" }),
   ];
-  const first = renderSelected(tasks, 0);
   const last = renderSelected(tasks, tasks.length - 1);
-  assert.equal(first.length, last.length, `tail window overflowed the fixed height: ${first.length} vs ${last.length}`);
   const rows = contentRows(last);
   assert.equal(rows.length, 7, `tail window not full: ${rows.map((row) => row.id).join(", ")}`);
   assert.ok(rows.at(-1)?.arrow && rows.at(-1)?.id === "T8", `arrow is not on the last content row: ${JSON.stringify(rows)}`);
+  assert.equal(trailingBlanks(last), 0, "tail window added blank rows");
 });
 
 test("a small board renders at its own stable height with no empty window rows", () => {

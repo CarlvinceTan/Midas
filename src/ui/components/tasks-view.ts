@@ -111,10 +111,6 @@ export class TasksView implements Component {
     const group = (task: Task): string => this.mode === "groups" ? task.group || "Ungrouped" : task.attempts.at(-1)?.branch ?? "Not allocated";
     const sorted = [...this.tasks].sort((a, b) => group(a).localeCompare(group(b)) || a.id.localeCompare(b.id, undefined, { numeric: true }));
     this.selected = Math.max(0, Math.min(this.selected, sorted.length - 1));
-    // A scroll window can gain or lose group headers and rows near either end,
-    // so reserve the worst case up front and pad the bottom. This keeps the
-    // overlay frame a fixed height while the pointer moves (see `maxListHeight`).
-    const listHeight = this.error || !sorted.length ? 1 : this.maxListHeight(sorted, group);
     const lines: string[] = [];
     if (this.error) lines.push(t.fg("error", safe(this.error)));
     else if (!sorted.length) {
@@ -183,9 +179,6 @@ export class TasksView implements Component {
         `Result: ${attempt?.result ?? "none"} · merge: ${selected.mergedCommit ?? "none"}`);
     }
     lines.push(...details);
-    // The details block has a constant line count for a given set, so padding the
-    // whole output to `listHeight + details` is stable for every selection.
-    while (lines.length < listHeight + details.length) lines.push("");
     return lines.map((line) => truncateToWidth(line, Math.max(1, width), "…"));
   }
 
@@ -197,28 +190,5 @@ export class TasksView implements Component {
   private scrollStart(total: number, selected: number): number {
     const maxStart = Math.max(0, total - windowRows);
     return Math.min(Math.max(0, selected - 3), maxStart);
-  }
-
-  /**
-   * Worst-case number of list lines across every possible scroll position for the
-   * current task set/mode. It scans the same clamped windows `render` produces so
-   * the reserved height accounts for the group headers each window can gain or
-   * lose; the board is small, so scanning every position is cheap.
-   */
-  private maxListHeight(sorted: Task[], group: (task: Task) => string): number {
-    let max = 1;
-    for (let selected = 0; selected < sorted.length; selected += 1) {
-      const start = this.scrollStart(sorted.length, selected);
-      let count = 0;
-      let lastGroup: string | undefined;
-      for (const task of sorted.slice(start, start + windowRows)) {
-        const label = group(task);
-        if (label !== lastGroup) { count += 1; lastGroup = label; }
-        count += 1;
-      }
-      if (sorted.length > windowRows) count += 1;
-      max = Math.max(max, count);
-    }
-    return max;
   }
 }
