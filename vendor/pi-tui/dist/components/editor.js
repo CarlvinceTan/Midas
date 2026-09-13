@@ -291,6 +291,10 @@ export class Editor {
     pasteCounter = 0;
     // Image chips: marker text -> source file path
     imageAttachments = new Map();
+    // Session-lifetime memory of every chip created or restored (marker -> source
+    // path). Unlike imageAttachments this survives setText()/submit, so a marker
+    // copied out of the transcript can be re-attached when pasted back.
+    knownImageMarkers = new Map();
     // Bracketed paste mode buffering
     pasteBuffer = "";
     isInPaste = false;
@@ -1018,6 +1022,7 @@ export class Editor {
         const name = displayImageName(displayName || baseName(path));
         const marker = `[Image: ${name}]`;
         this.imageAttachments.set(marker, path);
+        this.knownImageMarkers.set(marker, path);
         // Always leave a plain space after the chip so following text does not
         // glue onto it. The space is ordinary buffer text, not part of the chip.
         const currentLine = this.state.lines[this.state.cursorLine] || "";
@@ -1038,8 +1043,10 @@ export class Editor {
     setImageAttachments(attachments) {
         this.imageAttachments.clear();
         for (const attachment of attachments ?? []) {
-            if (attachment && attachment.marker)
+            if (attachment && attachment.marker) {
                 this.imageAttachments.set(attachment.marker, attachment.path);
+                this.knownImageMarkers.set(attachment.marker, attachment.path);
+            }
         }
     }
     /**
@@ -1056,6 +1063,7 @@ export class Editor {
         const start = this.state.cursorCol - path.length;
         const marker = `[Image: ${displayImageName(baseName(path))}]`;
         this.imageAttachments.set(marker, path);
+        this.knownImageMarkers.set(marker, path);
         // Always separate the chip from following text with a plain space (see
         // insertImageAttachment); don't double up on an existing one.
         const separator = this.state.cursorCol < line.length && line[this.state.cursorCol] === " " ? "" : " ";
@@ -1194,6 +1202,18 @@ export class Editor {
             .split("")
             .filter((char) => char === "\n" || char.charCodeAt(0) >= 32)
             .join("");
+        // Re-attach chips copied out of the transcript: a pasted `[Image: name]`
+        // marker only becomes a live chip when we still remember the source path
+        // it was created from. Markers with no memory (or text typed by hand)
+        // stay plain, so pasted text is still inserted verbatim below.
+        for (const match of filteredText.matchAll(IMAGE_MARKER_REGEX)) {
+            const marker = match[0];
+            if (this.imageAttachments.has(marker))
+                continue;
+            const knownPath = this.knownImageMarkers.get(marker);
+            if (knownPath)
+                this.imageAttachments.set(marker, knownPath);
+        }
         // A pasted image path (e.g. a screenshot dragged into the terminal)
         // becomes an atomic chip and is attached when the prompt is sent.
         const singleLine = filteredText.trim();
